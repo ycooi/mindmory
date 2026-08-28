@@ -1,13 +1,80 @@
-# Mindmory Lite
+# Mindmory
 
-Mindmory Lite is an MIT-licensed, local-first memory daemon for MCP-capable AI
-assistants. Canonical memory and evidence are stored as human-readable JSONL;
-SQLite and vector indexes are rebuildable projections. The service runs as one
-Go process and does not require Docker, PostgreSQL, or a local LLM.
+> **Memory should belong to the person—not the model.**
+
+Mindmory is a local-first memory and evidence layer for AI assistants. It gives
+an assistant durable access to your preferences, decisions, corrections,
+projects, and history—without making any model or vendor the owner of that
+information.
+
+**AI models are replaceable. Your memory is not.**
+
+[![Release](https://img.shields.io/github/v/release/ycooi/mindmory?display_name=tag)](https://github.com/ycooi/mindmory/releases/latest)
+[![CI](https://github.com/ycooi/mindmory/actions/workflows/ci.yml/badge.svg)](https://github.com/ycooi/mindmory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26.6%2B-00ADD8?logo=go)](go.mod)
+
+[Download Mindmory Lite](https://github.com/ycooi/mindmory/releases/latest) ·
+[Agent installation guide](packaging/AGENT_INSTALL.md) ·
+[MCP integrations](packaging/integrations/README.md)
+
+## Why Mindmory exists
+
+An AI model has a temporary working context. Product-managed memory can make
+that context last longer, but it is often opaque, difficult to correct, and
+locked to one provider. Asking a model to “remember everything” creates another
+problem: guesses, stale details, and model errors can quietly become supposed
+facts.
+
+Mindmory treats personal memory as **user-owned infrastructure** and keeps three
+concerns deliberately separate:
+
+| Layer | Meaning |
+| --- | --- |
+| **Evidence** | What the person actually said or supplied |
+| **Memory** | The structured claim derived from that evidence |
+| **Retrieval** | How relevant, policy-eligible memories are selected |
+
+An evidence hash proves where a memory came from; it does not pretend that the
+statement is objectively true. Provenance stays visible, corrections remain
+possible, and the model never becomes the authority.
+
+> **The model may propose a memory. The memory system decides whether it may be
+> stored, retrieved, or trusted.**
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Conversations and evidence"] --> B["Canonical JSONL archive"]
+    B --> C["SQLite lexical index"]
+    B --> D["Optional vector index"]
+    C --> E["Policy-filtered retrieval"]
+    D --> E
+    E --> F["AI assistants through MCP"]
+```
+
+- **Portable by design.** Human-readable JSONL is canonical and remains usable
+  independently of a database, model, or vendor.
+- **Fast without surrendering ownership.** SQLite and persistent vector files
+  are derived indexes; either can be rebuilt from the canonical archive.
+- **Lexical first.** Exact names, dates, identifiers, and preferences work
+  without embeddings. Semantic search is optional when it proves useful.
+- **Correctable history.** New records supersede outdated memories without
+  erasing the evidence or the history of the change.
+- **Model-independent.** The same memory can serve Codex, Claude Code, DSH, and
+  other MCP-capable assistants.
+
+## Why “Lite”
+
+“Lite” describes the operational footprint, not the design. Mindmory Lite is a
+single-owner service built as one Go process with JSONL, SQLite, and optional
+embeddings. It requires no Docker, PostgreSQL, hosted vector database, or local
+LLM. The result is a memory service that can be inspected, backed up, moved,
+repaired, and understood by the person who owns it.
 
 Current release: **0.1.0** (2026-08-28)<br>
-Author: **OOI YC**<br>
-Organization: **KELE Research**
+Author: **OOI YC** · Organization: **KELE Research**
 
 ## What ships
 
