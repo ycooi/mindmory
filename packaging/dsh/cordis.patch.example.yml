@@ -1,0 +1,29 @@
+# Mindmory MCP — DeepSeek Harness profile patch (template).
+#
+# Paste this block into BOTH of these files, then restart the harness
+# (or start a new session):
+#
+#     ~/.dsh/profiles/web/cordis.patch.yml
+#     ~/.dsh/profiles/headless/cordis.patch.yml
+#
+# The dsh loader merges each profile's patch after every bundle layer; each
+# `insert` registers one plugin instance. The MCP client below is the only
+# required entry — it exposes the mcp__mindmory__* tools to the agent.
+#
+# REPLACE THE PATH PLACEHOLDER:
+#   - <ABSOLUTE-PATH-TO-BIN>  -> absolute path of this package's bin/
+#                               (the same path setup.sh prints, e.g.
+#                                /path/to/mindmory/bin/mindmory-mcp-stdio)
+#
+# No token is placed in this profile. The stdio bridge reads the protected
+# mindmory-config.sh from the distribution root internally.
+
+# Bridge the local Mindmory persistent memory (stdio MCP server) into the
+# agent as mcp__mindmory__* tools.
+- insert:
+    - id: mcp-mindmory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mindmory
+        transport: stdio
+        command: <ABSOLUTE-PATH-TO-BIN>/mindmory-mcp-stdio

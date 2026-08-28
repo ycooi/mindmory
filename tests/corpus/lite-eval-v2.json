@@ -1,0 +1,16 @@
+{
+  "version": "mindmory-lite-eval-v2",
+  "description": "Deterministic fixture templates expanded into 200 independent retrieval cases.",
+  "templates": [
+    {"category":"exact_en","count":20,"memory":"English exact decision %03d uses cobalt protocol","query":"English exact decision %03d uses cobalt protocol","expect":"hit"},
+    {"category":"exact_zh","count":20,"memory":"中文精确记忆 %03d 使用青玉方案","query":"中文精确记忆 %03d 使用青玉方案","expect":"hit"},
+    {"category":"mixed","count":20,"memory":"项目 Project-%03d 的 API 使用朱砂模式","query":"Project-%03d API 朱砂模式","expect":"hit"},
+    {"category":"typo","count":20,"memory":"deployment sentinel %03d preserves recovery state","query":"deploymnt sentinel %03d preserves recovery state","expect":"hit"},
+    {"category":"paraphrase","count":30,"memory":"immutable backup policy %03d keeps a frozen snapshot for restoration","query":"recovery copy %03d that cannot be changed","expect":"hit"},
+    {"category":"negative","count":30,"memory":"ordinary fixture memory %03d about gardening","query":"absent-negative-token-%03d","expect":"none"},
+    {"category":"lifecycle","count":15,"memory":"excluded lifecycle record %03d","query":"excluded lifecycle record %03d","expect":"none","lifecycle":"FORGOTTEN"},
+    {"category":"sensitivity","count":15,"memory":"secret fixture credential %03d","query":"secret fixture credential %03d","expect":"none","sensitivity":"SECRET","secret_like":true},
+    {"category":"project_isolation","count":15,"memory":"other project boundary %03d","query":"other project boundary %03d","expect":"none","project":"project-b"},
+    {"category":"alias","count":15,"memory":"别名实体%03d 的稳定规则","query":"fixture alias entity %03d","expect":"hit","alias":true}
+  ]
+}

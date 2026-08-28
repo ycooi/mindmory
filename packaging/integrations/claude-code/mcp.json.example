@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mindmory": {
+      "type": "stdio",
+      "command": "/ABSOLUTE/PATH/bin/mindmory-mcp-stdio",
+      "args": [],
+      "env": {}
+    }
+  }
+}

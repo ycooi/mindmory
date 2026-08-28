@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible Mindmory problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private memories, or complete runtime logs.
+  - type: input
+    id: version
+    attributes:
+      label: Mindmory version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: embeddings
+    attributes:
+      label: Embedding mode
+      options:
+        - Disabled
+        - Ollama
+        - OpenAI-compatible
+        - Unknown
+    validations:
+      required: true

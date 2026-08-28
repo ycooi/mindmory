@@ -1,0 +1,42 @@
+{
+  "version": "mindmory-lite-semantic-challenge-v1",
+  "description": "Semantic retrieval challenge with conceptually paired text, no visible fixture ordinals, plus policy and hard-negative controls.",
+  "templates": [
+    {"category":"semantic_en_01","count":1,"memory":"The application must run directly on macOS without using containers.","query":"Should this service be started with Docker?","expect":"hit"},
+    {"category":"semantic_en_02","count":1,"memory":"Newline-delimited JSON records are the authoritative source of stored knowledge.","query":"Where does the system keep its canonical memories?","expect":"hit"},
+    {"category":"semantic_en_03","count":1,"memory":"The local search database is disposable and may always be reconstructed from canonical records.","query":"What should happen after the keyword index is deleted?","expect":"hit"},
+    {"category":"semantic_en_04","count":1,"memory":"Create a frozen snapshot before copying data for disaster recovery.","query":"How are safe backups supposed to be made?","expect":"hit"},
+    {"category":"semantic_en_05","count":1,"memory":"The owner prefers concise answers that begin with the practical outcome.","query":"What response style does the user like?","expect":"hit"},
+    {"category":"semantic_en_06","count":1,"memory":"Every correction creates a successor record while retaining the historical predecessor.","query":"Does editing a fact erase its old version?","expect":"hit"},
+    {"category":"semantic_en_07","count":1,"memory":"Only the current project and globally scoped knowledge may enter automatic context.","query":"Which workspace information is allowed during recall?","expect":"hit"},
+    {"category":"semantic_en_08","count":1,"memory":"The embedding service is optional; keyword retrieval must remain available during model outages.","query":"Can search continue when Ollama is offline?","expect":"hit"},
+    {"category":"semantic_en_09","count":1,"memory":"Credentials and instruction-shaped content are prohibited from automatic memory retrieval.","query":"Are passwords ever injected into context?","expect":"hit"},
+    {"category":"semantic_en_10","count":1,"memory":"A human approval must reload evidence and repeat every safety check before committing.","query":"What validation is required when accepting a pending proposal?","expect":"hit"},
+    {"category":"semantic_en_11","count":1,"memory":"Vector files are derived acceleration data rather than an independent source of truth.","query":"Would losing the embeddings destroy my memories?","expect":"hit"},
+    {"category":"semantic_en_12","count":1,"memory":"The service binds to the loopback interface for single-user local operation.","query":"May the daemon listen publicly on the network?","expect":"hit"},
+    {"category":"semantic_en_13","count":1,"memory":"Repeated explicit requests strengthen an existing memory instead of creating duplicates.","query":"What happens when I ask it to remember the same thing twice?","expect":"hit"},
+    {"category":"semantic_en_14","count":1,"memory":"Forgetting changes lifecycle eligibility immediately but does not physically erase historical vector bytes.","query":"How quickly does a deleted fact stop appearing in recall?","expect":"hit"},
+    {"category":"semantic_en_15","count":1,"memory":"The integrity signing key must contain at least thirty-two bytes.","query":"What is the minimum length for the history authentication secret?","expect":"hit"},
+    {"category":"semantic_en_16","count":1,"memory":"Query embeddings are cached only in bounded volatile memory and never persisted.","query":"Does the system save vectorized searches to disk?","expect":"hit"},
+    {"category":"semantic_en_17","count":1,"memory":"A model change builds a separate vector generation rather than mutating the active one.","query":"How are new embedding versions rolled out safely?","expect":"hit"},
+    {"category":"semantic_en_18","count":1,"memory":"Inactive and superseded records remain auditable but cannot be surfaced automatically.","query":"Can obsolete knowledge still influence an answer?","expect":"hit"},
+    {"category":"semantic_en_19","count":1,"memory":"The passive learner may stage uncertain durable intent for later owner review.","query":"What happens when automatic memory formation lacks confidence?","expect":"hit"},
+    {"category":"semantic_en_20","count":1,"memory":"Operational logs may contain safe identifiers and timings but never full private queries or vectors.","query":"What information is forbidden in telemetry?","expect":"hit"},
+
+    {"category":"semantic_cross_01","count":1,"memory":"用户希望所有服务都在本机运行，不依赖容器平台。","query":"Does the owner prefer a cloud or local installation?","expect":"hit"},
+    {"category":"semantic_cross_02","count":1,"memory":"被遗忘的记忆必须立刻停止出现在自动召回结果中。","query":"How should forgotten information behave during retrieval?","expect":"hit"},
+    {"category":"semantic_cross_03","count":1,"memory":"备份时先生成冻结快照，不能直接复制正在写入的数据目录。","query":"What is the safe procedure for creating a backup?","expect":"hit"},
+    {"category":"semantic_cross_04","count":1,"memory":"项目范围的记忆只能在同一个项目会话里使用。","query":"Can knowledge from workspace A appear while working in workspace B?","expect":"hit"},
+    {"category":"semantic_cross_05","count":1,"memory":"向量索引损坏时，关键词搜索仍然必须正常工作。","query":"Must lexical recall survive semantic index corruption?","expect":"hit"},
+    {"category":"semantic_cross_06","count":1,"memory":"The owner calls the assistant 余烬 and expects that identity to remain stable.","query":"用户给助手取了什么中文名字？","expect":"hit"},
+    {"category":"semantic_cross_07","count":1,"memory":"All derived indexes can be rebuilt from the signed canonical history.","query":"如果搜索数据库丢失，应该从哪里恢复？","expect":"hit"},
+    {"category":"semantic_cross_08","count":1,"memory":"Sensitive credentials are never eligible for automatic context injection.","query":"密码可以被自动放进上下文吗？","expect":"hit"},
+    {"category":"semantic_cross_09","count":1,"memory":"The system records corrections as a lineage rather than silently replacing facts.","query":"修改记忆时会不会把旧记录直接覆盖？","expect":"hit"},
+    {"category":"semantic_cross_10","count":1,"memory":"Semantic retrieval is a fallback and strong keyword matches should avoid model inference.","query":"什么时候不应该调用向量模型？","expect":"hit"},
+
+    {"category":"negative","count":20,"memory":"Routine gardening notes %03d describe soil moisture and seasonal pruning.","query":"unrelated spacecraft propulsion request %03d","expect":"none"},
+    {"category":"lifecycle","count":10,"memory":"retired private recollection %03d","query":"retired private recollection %03d","expect":"none","lifecycle":"FORGOTTEN"},
+    {"category":"sensitivity","count":10,"memory":"confidential access credential %03d","query":"confidential access credential %03d","expect":"none","sensitivity":"SECRET","secret_like":true},
+    {"category":"project_isolation","count":10,"memory":"workspace beta confidential decision %03d","query":"workspace beta confidential decision %03d","expect":"none","project":"project-b"}
+  ]
+}
