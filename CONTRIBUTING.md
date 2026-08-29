@@ -11,5 +11,8 @@ Thank you for helping improve Mindmory.
    submitting a pull request.
 6. Keep commits focused and explain compatibility or migration effects.
 
+All contributions and releases must follow [PUBLICATION_POLICY.md](PUBLICATION_POLICY.md). Run
+`sh scripts/verify-publication.sh` before pushing; private and unfinished material remains local.
+
 By contributing, you agree that your contribution is licensed under the MIT
 License included with this repository.
