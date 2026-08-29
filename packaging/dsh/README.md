@@ -1,8 +1,9 @@
 # Wiring Mindmory MCP into DeepSeek Harness
 
-Mindmory exposes a stdio MCP server (`bin/mindmory-mcp-stdio`). DeepSeek
-Harness loads MCP servers through per-profile patch files, so the memory tools
-appear in the agent as `mcp__mindmory__*`.
+Mindmory exposes a stdio MCP server (`bin/mindmory-mcp-stdio`) and a local
+Harness lifecycle plugin (`dsh/checkpoint-relay.mjs`). DeepSeek Harness loads
+both through per-profile patch files: the MCP bridge provides the memory tools,
+while the relay archives exact user prompts and assembled assistant responses.
 
 ## 1. Run the initialization sequence
 
@@ -27,8 +28,17 @@ Harness has two profile layers you can patch: `web` (this GUI) and `headless`
 ~/.dsh/profiles/headless/cordis.patch.yml
 ```
 
-Then restart the harness or start a new session. The agent now has these
-tools:
+The printed block contains two entries. Keep both:
+
+- `mcp-mindmory` exposes the `mcp__mindmory__*` tools.
+- `mindmory-checkpoint-relay` observes Harness `user/message` and
+  `assistant/message` events and checkpoints both roles in event order.
+
+The relay ignores synthetic user injections and empty/tool-call-only assistant
+messages. It uses stable Harness message IDs for retry idempotency and forwards
+the assembled assistant message, not partial streaming chunks.
+
+Then restart the harness or start a new session. The agent now has these tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -44,12 +54,20 @@ tools:
 | `proposal_review` | Inspect pending mutation proposals (staged, awaiting review). |
 | `ops_recent` | Recent operational journal events. |
 
+### Upgrading a legacy Harness profile
+
+If a profile already contains `@deepseek-ai/dsh-checkpoint-relay`, remove that
+entire legacy entry before adding `mindmory-checkpoint-relay`. The old private
+relay archives user messages only. Running both relays together can submit the
+same user turn under two different idempotency keys.
+
 ## 3. Credential handling
 
 The MCP token exists only in `mindmory-config.sh` and is read internally by the
-stdio bridge. Do not paste it into a profile or conversation. If configuration
-is missing, the bridge exposes only `mindmory_status`, which reports a safe
-setup command without exposing the token.
+stdio bridge and checkpoint adapter. Neither Harness entry contains an endpoint
+or credential. Do not paste the token into a profile or conversation. If
+configuration is missing, the bridge exposes only `mindmory_status`, which
+reports a safe setup command without exposing the token.
 
 ## 4. Non-dsh clients
 

@@ -54,9 +54,9 @@ When `state` is `READY`:
 5. Report success only when its state is `READY` and the normal memory tools
    are present.
 6. Read `integrations/README.md` and, with user approval, install the matching
-   host lifecycle hooks. The Codex and Claude Code packages checkpoint the
-   exact current prompt needed for evidence-backed mutations and the completed
-   assistant response needed for full conversation history.
+   host lifecycle hooks. The Codex, Claude Code, and DeepSeek Harness packages
+   checkpoint the exact current prompt needed for evidence-backed mutations and
+   the completed assistant response needed for full conversation history.
 
 When `state` is `ACTION_REQUIRED`, do not claim installation succeeded.
 Report the setup diagnostics from stderr without including secret file
@@ -85,7 +85,7 @@ the user that automatic restart after login or reboot is not yet configured.
 ## Host compatibility
 
 Codex and Claude Code templates are bundled under `integrations/`. DeepSeek
-Harness templates remain under `dsh/`. Other local stdio MCP hosts can use
-`integrations/generic/README.md`; read tools work after registration, while
-mutation tools require a host lifecycle event connected to the checkpoint
-adapter.
+Harness MCP and two-sided lifecycle templates remain under `dsh/`. Other local
+stdio MCP hosts can use `integrations/generic/README.md`; read tools work after
+registration, while mutation tools require a host lifecycle event connected to
+the checkpoint adapter.

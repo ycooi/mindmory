@@ -90,6 +90,7 @@ type hookInput struct {
 	HookEventName        string `json:"hook_event_name"`
 	TranscriptPath       string `json:"transcript_path"`
 	LastAssistantMessage string `json:"last_assistant_message"`
+	OccurredAt           string `json:"occurred_at"`
 }
 
 type hookCheckpointRequest struct {
@@ -157,6 +158,12 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 	identity := strings.Join([]string{hostName, event.SessionID, sequenceMarker, role, content}, "\x00")
 	digest := sha256.Sum256([]byte(identity))
 	externalMessageID := fmt.Sprintf("%s-%s-%x", hostName, role, digest[:16])
+	occurredAt := time.Now().UTC()
+	if supplied := strings.TrimSpace(event.OccurredAt); supplied != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, supplied); parseErr == nil {
+			occurredAt = parsed.UTC()
+		}
+	}
 	payload, err := json.Marshal(hookCheckpointRequest{
 		// setup.sh creates and binds this stable continuity session. Every host
 		// writes to it, so the stdio bridge can resolve the latest user message.
@@ -168,7 +175,7 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 			Role:              role,
 			ContentType:       "text/plain",
 			Content:           content,
-			OccurredAt:        time.Now().UTC(),
+			OccurredAt:        occurredAt,
 			AssistantID:       assistantID,
 			AssistantName:     assistantName,
 		}},
@@ -203,6 +210,8 @@ func assistantDisplayName(hostName string) string {
 		return "Codex"
 	case "claude-code":
 		return "Claude Code"
+	case "deepseek-harness":
+		return "DeepSeek Harness"
 	default:
 		return hostName
 	}

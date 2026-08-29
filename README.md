@@ -206,6 +206,9 @@ Release archives also include `integrations/codex/`,
 packages include `UserPromptSubmit` and `Stop` checkpoint hooks. The former
 binds evidence-backed mutations to the exact current prompt; the latter stores
 the completed assistant response so conversation history includes both roles.
+The DeepSeek Harness package includes an equivalent local lifecycle relay over
+its canonical `user/message` and assembled `assistant/message` events; it does
+not archive partial streaming chunks or synthetic context injections.
 
 ## Documentation and project policy
 

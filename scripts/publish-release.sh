@@ -72,12 +72,16 @@ in \`var/data/\` as human-readable JSONL.
 
 - Codex and Claude Code integrations now checkpoint both the exact user prompt
   and the completed assistant response.
+- DeepSeek Harness now ships a credential-free local lifecycle relay over its
+  canonical user/message and assembled assistant/message events.
 - Assistant replies retain their role and host identity in canonical JSONL and
   the complete SQLite read projection.
 - Hook retries remain idempotent even when their invocation timestamp changes.
 - Existing v0.1.1 installations must merge the new \`Stop\` hook from the
-  bundled Codex or Claude Code template; upgrading the binary alone does not
-  edit host configuration.
+  bundled Codex or Claude Code template. DeepSeek Harness users must add the
+  bundled \`mindmory-checkpoint-relay\` profile entry and remove any legacy
+  \`@deepseek-ai/dsh-checkpoint-relay\` entry. Upgrading the binary alone does
+  not edit host configuration.
 
 ### Platforms
 

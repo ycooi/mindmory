@@ -8,7 +8,7 @@ will use it:
 | Codex CLI, desktop, or IDE | `codex/` | User prompt plus completed assistant response |
 | Claude Code | `claude-code/` | User prompt plus completed assistant response |
 | Other local MCP clients | `generic/` | Requires a host lifecycle adapter |
-| DeepSeek Harness | `../dsh/` | Use its existing harness integration |
+| DeepSeek Harness | `../dsh/` | User prompt plus assembled assistant response |
 
 Run `../setup.sh --agent --complete-mcp` before configuring a host. Never copy
 the contents of `mindmory-config.sh` into an MCP profile or conversation. The

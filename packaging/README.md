@@ -39,7 +39,7 @@ DeepSeek Harness, and generic stdio clients.
 | `AGENT_INSTALL.md` | Authoritative agent installation and result-handling contract |
 | `setup.sh` | Idempotent initialization — generates or reuses protected configuration, starts the daemon, and reports status |
 | `integrations/` | Codex, Claude Code, and generic MCP configuration plus automatic user/assistant checkpoint adapters |
-| `dsh/` | DeepSeek Harness wiring: `cordis.patch.example.yml` template + `README.md` guide |
+| `dsh/` | DeepSeek Harness MCP wiring + exact user/assistant lifecycle relay |
 | `README.md`, `LICENSE`, `NOTICE.md` | This guide, the complete MIT license, and attribution |
 | `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.txt` | Complete compiled dependency inventory and upstream license texts |
 
@@ -100,9 +100,9 @@ This distribution is built to ship zero private runtime data:
 
 Mindmory exposes an MCP server over stdio (`bin/mindmory-mcp-stdio`). Start at
 `integrations/README.md`, then follow the Codex, Claude Code, or generic host
-guide. DeepSeek Harness keeps its dedicated guide under `dsh/`. All bundled
-host profiles contain paths only; credentials remain in the protected local
-configuration.
+guide. DeepSeek Harness keeps its MCP and two-sided lifecycle relay under
+`dsh/`. All bundled host profiles contain paths only; credentials remain in
+the protected local configuration.
 
 The one-turn lifecycle is:
 

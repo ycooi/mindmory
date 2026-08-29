@@ -50,7 +50,7 @@ check_stage_clean() {
   for f in $(find "$stage" -type f | sort); do
     rel="${f#"$stage"/}"
     case "$rel" in
-      bin/mindmoryd-lite|bin/mindmoryctl|bin/mindmory-mcp-stdio|mindmory-config.example.sh|AGENT_INSTALL.md|README.md|LICENSE|NOTICE.md|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt|VERSION|setup.sh|dsh/README.md|dsh/cordis.patch.example.yml|integrations/README.md|integrations/checkpoint-hook.sh|integrations/codex/README.md|integrations/codex/config.toml.example|integrations/codex/hooks.json.example|integrations/claude-code/README.md|integrations/claude-code/mcp.json.example|integrations/claude-code/settings.json.example|integrations/generic/README.md) ;;
+      bin/mindmoryd-lite|bin/mindmoryctl|bin/mindmory-mcp-stdio|mindmory-config.example.sh|AGENT_INSTALL.md|README.md|LICENSE|NOTICE.md|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt|VERSION|setup.sh|dsh/README.md|dsh/cordis.patch.example.yml|dsh/checkpoint-relay.mjs|integrations/README.md|integrations/checkpoint-hook.sh|integrations/codex/README.md|integrations/codex/config.toml.example|integrations/codex/hooks.json.example|integrations/claude-code/README.md|integrations/claude-code/mcp.json.example|integrations/claude-code/settings.json.example|integrations/generic/README.md) ;;
       *) echo "LEAK: unexpected file in package: $rel" >&2; bad=1 ;;
     esac
   done
@@ -92,7 +92,7 @@ for platform in $PLATFORMS; do
   cp packaging/README.md packaging/AGENT_INSTALL.md packaging/mindmory-config.example.sh LICENSE NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt packaging/setup.sh "$stage/"
   cp -R packaging/dsh "$stage/dsh"
   cp -R packaging/integrations "$stage/integrations"
-  chmod 755 "$stage/setup.sh" "$stage/integrations/checkpoint-hook.sh"
+  chmod 755 "$stage/setup.sh" "$stage/integrations/checkpoint-hook.sh" "$stage/dsh/checkpoint-relay.mjs"
   printf '%s\n' "$VERSION" > "$stage/VERSION"
   check_stage_clean "$stage" || exit 1
   tar -C "$DIST" -czf "$DIST/mindmory-mcp-$os-$arch.tar.gz" "mindmory-mcp-$os-$arch"

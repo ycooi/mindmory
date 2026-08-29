@@ -339,9 +339,15 @@ then restart the harness (or start a new session):
         # No token is placed in the agent profile. The bridge securely reads
         # $PWD/mindmory-config.sh beside the distribution.
 
+- insert:
+    - id: mindmory-checkpoint-relay
+      name: $PWD/dsh/checkpoint-relay.mjs
+      # Archives exact direct-user and assembled assistant messages through
+      # the credential-hiding local checkpoint adapter.
+
 The tools then appear as mcp__mindmory__* (memory_context, memory_remember,
-memory_search, ...). See dsh/README.md in this package for optional extras
-(checkpoint-relay, mindmory-reflex) and non-dsh clients.
+memory_search, ...). The relay archives both sides of every completed Harness
+turn. See dsh/README.md in this package for details and non-dsh clients.
 
 Make it permanent (optional, Linux)
 -----------------------------------

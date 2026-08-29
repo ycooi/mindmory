@@ -34,7 +34,7 @@ if remote="$(git -C "$(dirname "$0")/.." remote get-url origin 2>/dev/null || tr
 fi
 markers="$markers ${PRIVATE_MARKERS:-}"
 
-allow="bin/mindmoryd-lite bin/mindmoryctl bin/mindmory-mcp-stdio mindmory-config.example.sh AGENT_INSTALL.md README.md LICENSE NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt VERSION setup.sh dsh/README.md dsh/cordis.patch.example.yml integrations/README.md integrations/checkpoint-hook.sh integrations/codex/README.md integrations/codex/config.toml.example integrations/codex/hooks.json.example integrations/claude-code/README.md integrations/claude-code/mcp.json.example integrations/claude-code/settings.json.example integrations/generic/README.md"
+allow="bin/mindmoryd-lite bin/mindmoryctl bin/mindmory-mcp-stdio mindmory-config.example.sh AGENT_INSTALL.md README.md LICENSE NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt VERSION setup.sh dsh/README.md dsh/cordis.patch.example.yml dsh/checkpoint-relay.mjs integrations/README.md integrations/checkpoint-hook.sh integrations/codex/README.md integrations/codex/config.toml.example integrations/codex/hooks.json.example integrations/claude-code/README.md integrations/claude-code/mcp.json.example integrations/claude-code/settings.json.example integrations/generic/README.md"
 
 status=0
 tmp="$(mktemp -d)"

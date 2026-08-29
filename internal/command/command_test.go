@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCheckpointHookArchivesHostPromptWithoutWritingResponse(t *testing.T) {
@@ -86,6 +87,31 @@ func TestCheckpointHookArchivesAssistantStopWithIdentity(t *testing.T) {
 	}
 	if nextID := received[2].Messages[0].ExternalMessageID; nextID == message.ExternalMessageID {
 		t.Fatalf("identical assistant text in a later transcript position collapsed: %s", nextID)
+	}
+}
+
+func TestCheckpointHookPreservesHostTimestampAndDeepSeekIdentity(t *testing.T) {
+	var request hookCheckpointRequest
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"session_id":"s1"}`)
+	}))
+	defer backend.Close()
+	t.Setenv("MINDMORY_ENDPOINT", backend.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "test-checkpoint-token-0123456789")
+	input := strings.NewReader(`{"session_id":"dsh-1","turn_id":"assistant-1","hook_event_name":"Stop","last_assistant_message":"Exact Harness reply","occurred_at":"2026-08-29T01:02:03.456Z"}`)
+	if code := runCheckpointHook([]string{"--host", "deepseek-harness"}, input); code != 0 {
+		t.Fatalf("checkpoint hook exit=%d", code)
+	}
+	message := request.Messages[0]
+	if message.Role != "assistant" || message.AssistantID != "deepseek-harness" || message.AssistantName != "DeepSeek Harness" {
+		t.Fatalf("assistant identity=%+v", message)
+	}
+	want := time.Date(2026, 8, 29, 1, 2, 3, 456000000, time.UTC)
+	if !message.OccurredAt.Equal(want) {
+		t.Fatalf("occurred_at=%s want %s", message.OccurredAt, want)
 	}
 }
 

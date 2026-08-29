@@ -27,3 +27,10 @@
         serverName: mindmory
         transport: stdio
         command: <ABSOLUTE-PATH-TO-BIN>/mindmory-mcp-stdio
+
+# Archive exact direct-user and assembled assistant messages. This local
+# plugin invokes the distribution's credential-hiding checkpoint adapter; no
+# endpoint or token belongs in the Harness profile.
+- insert:
+    - id: mindmory-checkpoint-relay
+      name: <ABSOLUTE-PATH-TO-DIST>/dsh/checkpoint-relay.mjs
