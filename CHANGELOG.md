@@ -3,6 +3,30 @@
 All notable changes to Mindmory are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-08-29
+
+### Added
+
+- Complete disposable SQLite read projection for memories, messages, and
+  evidence, while canonical JSONL remains the portable recovery authority.
+- Opt-in `MINDMORY_LOW_RAM_EXPERIMENT=1` mode that releases archive-sized Go
+  maps after startup and serves operational reads from SQLite.
+- Reproducible SQLite retrieval benchmarks and a 100,000-memory heap probe.
+
+### Changed
+
+- Search candidates are hydrated in a single SQLite batch; exact recall,
+  evidence joins, learner input, statistics, and vector health use SQLite.
+- Evidence rows no longer duplicate complete archived message bodies.
+
+### Fixed
+
+- Feedback access counts are no longer incremented twice at checkpoint.
+- MCP status in low-RAM mode computes vector freshness in SQL without loading
+  the complete archive.
+- Packaged setup keeps the operator CLI endpoint aligned when a custom daemon
+  port is selected.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

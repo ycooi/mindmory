@@ -31,6 +31,17 @@ func (s *Store) ReadOnlyStatistics() StoreStatistics {
 		Proposals: len(s.proposals), ContinuityRevisions: len(s.continuity), ProjectContexts: len(s.projectCtx),
 		MutationEvents: s.mutationEventSeq, ArchivedUserTurns: s.turnSeq,
 	}
+	if s.lowRAM && s.Index != nil {
+		if counts, err := s.Index.Counts(); err == nil {
+			statistics.Messages = counts.Messages
+			statistics.Memories = counts.Memories
+			statistics.ActiveMemories = counts.ActiveMemories
+			statistics.InactiveMemories = counts.InactiveMemories
+			statistics.SecretLikeMemories = counts.SecretLikeMemories
+			statistics.InstructionMemories = counts.InstructionMemories
+			statistics.EvidenceLinks = counts.EvidenceLinks
+		}
+	}
 	for _, memory := range s.memories {
 		if memory.Lifecycle == "ACTIVE" {
 			statistics.ActiveMemories++

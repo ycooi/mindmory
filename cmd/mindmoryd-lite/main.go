@@ -128,6 +128,13 @@ func main() {
 		slog.Error("import failed", "error", err)
 		os.Exit(1)
 	}
+	if cfg.LowRAMExperiment {
+		if err := store.EnableLowRAMExperiment(); err != nil {
+			slog.Error("low-RAM experiment initialization failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("experimental SQLite-only payload mode enabled")
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	// Single-user local deployment: trust loopback for model-facing routes by

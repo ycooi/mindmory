@@ -68,6 +68,15 @@ Prebuilt binaries for the MIT-licensed Mindmory source repository. Runs entirely
 on your own machine: no Docker, no PostgreSQL, no telemetry, no cloud. Your memories live
 in \`var/data/\` as human-readable JSONL.
 
+### What changed in v0.1.1
+
+- SQLite now serves complete memory, message, and evidence records while JSONL
+  remains the canonical, portable recovery source.
+- Search candidate hydration and evidence retrieval stay inside SQLite instead
+  of scanning or reopening the canonical archive.
+- Optional \`MINDMORY_LOW_RAM_EXPERIMENT=1\` mode reduces steady-state Go heap
+  by releasing archive-sized in-process maps after startup.
+
 ### Platforms
 
 | Package | Platform |

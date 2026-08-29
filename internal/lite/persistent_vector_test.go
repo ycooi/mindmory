@@ -64,8 +64,14 @@ func TestPersistentVectorsReuseAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if err = store.EnableLowRAMExperiment(); err != nil {
+		t.Fatal(err)
+	}
 	if store.VectorStore == nil || store.VectorStore.Generation() != generation {
 		t.Fatalf("generation not reused: %+v", store.VectorStatus())
+	}
+	if status := store.VectorStatus(); status.CurrentActiveMemories != 1 || status.Missing != 0 || status.Stale != 0 || status.Tombstoned != 0 {
+		t.Fatalf("low-RAM vector status: %+v", status)
 	}
 	offline := &countingEmbedder{model: "fixture", digest: "sha256:model", fail: true}
 	summary, err = store.SyncVectors(context.Background(), offline, VectorSyncOptions{})

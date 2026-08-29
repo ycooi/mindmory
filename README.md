@@ -56,8 +56,9 @@ flowchart LR
 
 - **Portable by design.** Human-readable JSONL is canonical and remains usable
   independently of a database, model, or vendor.
-- **Fast without surrendering ownership.** SQLite and persistent vector files
-  are derived indexes; either can be rebuilt from the canonical archive.
+- **Fast without surrendering ownership.** SQLite is the complete read
+  projection for search, recall, messages, and evidence. SQLite and persistent
+  vector files can both be rebuilt from the canonical archive.
 - **Lexical first.** Exact names, dates, identifiers, and preferences work
   without embeddings. Semantic search is optional when it proves useful.
 - **Correctable history.** New records supersede outdated memories without
@@ -73,7 +74,7 @@ embeddings. It requires no Docker, PostgreSQL, hosted vector database, or local
 LLM. The result is a memory service that can be inspected, backed up, moved,
 repaired, and understood by the person who owns it.
 
-Current release: **0.1.0** (2026-08-28)<br>
+Current release: **0.1.1** (2026-08-29)<br>
 Author: **OOI YC** · Organization: **KELE Research**
 
 ## What ships
@@ -130,6 +131,11 @@ export MINDMORY_EMBED_PROVIDER='disabled'
 export MINDMORY_SEMANTIC_SEARCH='0'
 ./bin/mindmoryd-lite
 ```
+
+Experimental steady-state RAM reduction can be enabled with
+`MINDMORY_LOW_RAM_EXPERIMENT=1`. It serves complete records from SQLite and
+releases archive-sized Go maps after startup. Startup still temporarily
+materializes canonical JSONL, so this is not yet the default.
 
 The default bind is `127.0.0.1:58080`. Keep it on loopback. Administrative
 routes always require `MINDMORY_ADMIN_TOKEN`; set `MINDMORY_AUTH=token` to
@@ -204,6 +210,7 @@ remember, correct, and forget operations can bind to the exact current prompt.
 
 - Operational recovery: [docs/lite/HARDENING_AND_RECOVERY.md](docs/lite/HARDENING_AND_RECOVERY.md)
 - Retrieval experiment: [docs/lite/SEMANTIC_RETRIEVAL_EXPERIMENT_2026-08-27.md](docs/lite/SEMANTIC_RETRIEVAL_EXPERIMENT_2026-08-27.md)
+- SQLite read architecture: [docs/lite/SQLITE_READ_PROJECTION.md](docs/lite/SQLITE_READ_PROJECTION.md)
 - Release process: [RELEASING.md](RELEASING.md)
 - Security reporting: [SECURITY.md](SECURITY.md)
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)

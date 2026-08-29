@@ -45,10 +45,20 @@ func TestRealStdioListsToolsAndBindsMutationAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(distribution, "bin", "mindmory-mcp-stdio")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/mindmory-mcp-stdio")
-	build.Dir = root
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v %s", err, output)
+	if releaseBinary := os.Getenv("MINDMORY_RELEASE_MCP_BINARY"); releaseBinary != "" {
+		contents, err := os.ReadFile(releaseBinary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(binary, contents, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		build := exec.Command("go", "build", "-o", binary, "./cmd/mindmory-mcp-stdio")
+		build.Dir = root
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build: %v %s", err, output)
+		}
 	}
 	configFile := filepath.Join(distribution, "mindmory-config.sh")
 	configText := "MINDMORY_ENDPOINT=" + backend.URL + "\n" +

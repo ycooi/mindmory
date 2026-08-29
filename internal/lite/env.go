@@ -18,12 +18,13 @@ import (
 // EnvConfig is the minimal environment contract for the lite daemon. It
 // reads exactly what the harness needs — nothing more.
 type EnvConfig struct {
-	Owner           string
-	CursorKey       string
-	MCPClients      map[string]config.MCPPrincipalConfig
-	Storage         StorageConfig
-	Embedding       EmbeddingConfig
-	SemanticEnabled bool
+	Owner            string
+	CursorKey        string
+	MCPClients       map[string]config.MCPPrincipalConfig
+	Storage          StorageConfig
+	Embedding        EmbeddingConfig
+	SemanticEnabled  bool
+	LowRAMExperiment bool
 }
 
 type StorageConfig struct {
@@ -130,6 +131,7 @@ func LoadEnv(lookup func(string) (string, bool)) (EnvConfig, error) {
 		}
 	}
 	cfg.SemanticEnabled = value("MINDMORY_SEMANTIC_SEARCH") == "1"
+	cfg.LowRAMExperiment = value("MINDMORY_LOW_RAM_EXPERIMENT") == "1"
 	return cfg, nil
 }
 

@@ -188,10 +188,17 @@ write `mindmory-config.sh` with these variables (requirements enforced at startu
 | `MINDMORY_OWNER` | Any name; identifies the single owner of this instance. |
 | `MINDMORY_CURSOR_SIGNING_KEY` | ≥ 32 random bytes. Signs session cursors and canonical mutation history. |
 | `MINDMORY_ADMIN_TOKEN` | ≥ 24 random chars. Always required for operator/admin routes. |
+| `MINDMORY_ADMIN_ENDPOINT` | Operator CLI endpoint; setup keeps it aligned with the selected daemon port. |
 | `MINDMORY_MCP_CLIENT_TOKENS_JSON` | JSON map of client key → token + capabilities. The token your assistant presents. |
 | `MINDMORY_LOCAL_CLIENT_KEY` | Required in local mode; selects one configured client principal deterministically. |
 | `MINDMORY_HTTP_PORT` | Host port for the daemon (default `58080`). |
-| `MINDMORY_DATA_DIR` | Data directory (default `var/data`); JSONL canonical store + derived index live here. |
+| `MINDMORY_ROOT_DIR` | Base directory for relative storage paths (default current directory). |
+| `MINDMORY_DATA_DIR` | Canonical JSONL directory (default `var/data`). |
+| `MINDMORY_DERIVED_DIR` | Rebuildable SQLite directory (default `var/derived`). |
+| `MINDMORY_VECTOR_DIR` | Rebuildable vector generations (default `var/derived/vectors`). |
+| `MINDMORY_SNAPSHOT_DIR` | Integrity-checked snapshots (default `var/data/snapshots`). |
+| `MINDMORY_EXPORT_DIR` | Import/export exchange directory (default `var/export`). |
+| `MINDMORY_LOW_RAM_EXPERIMENT` | Set to `1` to release archive-sized Go maps after startup and serve complete records from SQLite. JSONL remains canonical. |
 | `MINDMORY_ENDPOINT` / `MINDMORY_MCP_TOKEN` / `MINDMORY_MCP_LOG_LEVEL` | Consumed by `mindmory-mcp-stdio`, not the daemon. |
 
 Every token must be unique — the daemon rejects tokens reused across

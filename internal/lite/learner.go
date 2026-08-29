@@ -52,6 +52,13 @@ type learnerCandidate struct {
 // feed extraction: role=user, NORMAL sensitivity, not secret/instruction-
 // like, and not already cited by a memory evidence row. Newest first.
 func (s *Store) eligibleLearnerMessages(limit int) []learnerCandidate {
+	if s.lowRAM && s.Index != nil {
+		rows, err := s.Index.LearnerMessages(limit)
+		if err == nil {
+			return rows
+		}
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	cited := map[string]bool{}

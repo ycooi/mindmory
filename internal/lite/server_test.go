@@ -162,6 +162,38 @@ func TestApprovalRehydratesEvidenceAndCannotBypassSecurity(t *testing.T) {
 	}
 }
 
+func TestLowRAMExperimentGovernedMutationLifecycle(t *testing.T) {
+	server, store, principal, session := governanceFixture(t)
+	if err := store.EnableLowRAMExperiment(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	content := "Remember that low RAM mutations use SQLite."
+	messageID := addGovernanceMessage(t, store, session.SessionID, "low-ram-remember", content)
+	created, err := server.applyMutation(ctx, principal, mutationRequest{SessionID: session.SessionID, MessageID: messageID,
+		Mutation: domain.MutationRemember, MemoryKind: domain.KindUserPreference, Scope: domain.ScopeGlobal,
+		Subject: "low RAM mutations", EvidenceQuote: content})
+	if err != nil || created.Outcome != "APPLIED" {
+		t.Fatalf("low-RAM remember: %+v err=%v", created, err)
+	}
+	row, err := store.LoadMemoryRow(ctx, created.MemoryID)
+	if err != nil || row.Content != content {
+		t.Fatalf("low-RAM created row: %+v err=%v", row, err)
+	}
+
+	forgetContent := "Forget that low RAM mutations use SQLite."
+	forgetMessageID := addGovernanceMessage(t, store, session.SessionID, "low-ram-forget", forgetContent)
+	forgotten, err := server.applyMutation(ctx, principal, mutationRequest{SessionID: session.SessionID, MessageID: forgetMessageID,
+		Mutation: domain.MutationForget, TargetMemoryID: created.MemoryID, EvidenceQuote: forgetContent})
+	if err != nil || forgotten.Outcome != "APPLIED" {
+		t.Fatalf("low-RAM forget: %+v err=%v", forgotten, err)
+	}
+	row, err = store.LoadMemoryRow(ctx, created.MemoryID)
+	if err != nil || row.Lifecycle != "FORGOTTEN" {
+		t.Fatalf("low-RAM forgotten row: %+v err=%v", row, err)
+	}
+}
+
 func TestApprovalRejectsChangedArchivedEvidence(t *testing.T) {
 	server, store, principal, session := governanceFixture(t)
 	content := "This preference should use local backups."
@@ -178,6 +210,11 @@ func TestApprovalRejectsChangedArchivedEvidence(t *testing.T) {
 	message := store.messages[messageID]
 	message.Content = "changed after proposal"
 	store.messages[messageID] = message
+	if store.Index != nil {
+		if err := store.Index.UpsertMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store.mu.Unlock()
 	if rec := approveProposal(t, server, staged.ProposalID); rec.Code == http.StatusOK {
 		t.Fatalf("changed archived evidence was approved: %s", rec.Body.String())

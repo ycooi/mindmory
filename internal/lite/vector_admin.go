@@ -25,7 +25,42 @@ func (s *Store) VectorStatus() VectorStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := VectorStatus{State: "DEGRADED"}
-	for _, row := range s.memories {
+	if s.lowRAM && s.Index != nil {
+		if s.VectorStore == nil {
+			counts, err := s.Index.VectorCounts("")
+			if err == nil {
+				status.CurrentActiveMemories = counts.Active
+				status.Missing = counts.Missing
+			}
+			return status
+		}
+		manifest := s.VectorStore.Manifest()
+		counts, err := s.Index.VectorCounts(manifest.Generation)
+		if err != nil {
+			return status
+		}
+		status.Generation = manifest.Generation
+		status.State = "ACTIVE"
+		status.Vectors = s.VectorStore.Size()
+		status.CurrentActiveMemories = counts.Active
+		status.Missing = counts.Missing
+		status.Stale = counts.Stale
+		status.Tombstoned = counts.Tombstoned
+		status.Dimensions = manifest.Dimensions
+		status.DType = manifest.DType
+		status.ModelName = manifest.ModelName
+		status.ModelDigest = manifest.ModelDigest
+		status.EmbeddingInputVersion = manifest.EmbeddingInputVersion
+		status.NormalizationVersion = manifest.NormalizationVersion
+		return status
+	}
+	rows, err := s.allMemoryRowsLocked()
+	if err != nil {
+		return status
+	}
+	byID := make(map[string]MemoryRow, len(rows))
+	for _, row := range rows {
+		byID[row.MemoryID] = row
 		if row.Lifecycle == "ACTIVE" && row.Sensitivity == "NORMAL" && !row.SecretLike && !row.InstructionLike {
 			status.CurrentActiveMemories++
 		}
@@ -44,7 +79,7 @@ func (s *Store) VectorStatus() VectorStatus {
 	status.ModelDigest = manifest.ModelDigest
 	status.EmbeddingInputVersion = manifest.EmbeddingInputVersion
 	status.NormalizationVersion = manifest.NormalizationVersion
-	for id, row := range s.memories {
+	for id, row := range byID {
 		if row.Lifecycle != "ACTIVE" || row.Sensitivity != "NORMAL" || row.SecretLike || row.InstructionLike {
 			continue
 		}
@@ -53,7 +88,7 @@ func (s *Store) VectorStatus() VectorStatus {
 		}
 	}
 	for _, ref := range s.VectorStore.Refs() {
-		row, ok := s.memories[ref.SourceID]
+		row, ok := byID[ref.SourceID]
 		if !ok || row.Lifecycle != "ACTIVE" || row.Sensitivity != "NORMAL" || row.SecretLike || row.InstructionLike {
 			status.Tombstoned++
 		} else if ref.EmbeddingInputHash != EmbeddingInputHash(row) {

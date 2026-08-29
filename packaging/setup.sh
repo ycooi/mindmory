@@ -7,7 +7,8 @@
 #
 # Everything generated here is random and lives only on this machine. No
 # telemetry, no cloud, no shared state. Your memories stay in ./var/data/ as
-# human-readable JSONL (plus a derived SQLite search index, var/index.db).
+# human-readable JSONL (plus a derived SQLite read projection,
+# var/derived/index.db).
 #
 # Usage:
 #   ./setup.sh                       interactive first run
@@ -183,9 +184,18 @@ MINDMORY_CURSOR_SIGNING_KEY=$CURSOR_KEY
 
 # --- Host port and data ---------------------------------------------------
 MINDMORY_HTTP_PORT=$HTTP_PORT
+MINDMORY_ROOT_DIR=.
 MINDMORY_DATA_DIR=var/data
+MINDMORY_DERIVED_DIR=var/derived
+MINDMORY_VECTOR_DIR=var/derived/vectors
+MINDMORY_SNAPSHOT_DIR=var/data/snapshots
+MINDMORY_EXPORT_DIR=var/export
+# Set to 1 to serve complete payloads from SQLite and reduce steady-state RAM.
+# JSONL remains canonical; startup still temporarily materializes the archive.
+MINDMORY_LOW_RAM_EXPERIMENT=0
 
 # --- Operator credential (always enforced on administrative routes) --------
+MINDMORY_ADMIN_ENDPOINT=http://127.0.0.1:$HTTP_PORT
 MINDMORY_ADMIN_TOKEN=$ADMIN_TOKEN
 
 # --- Daemon client principals ----------------------------------------------
@@ -303,7 +313,7 @@ cat <<EOF
   owner    : $OWNER
   pid      : $DAEMON_PID  (stop with: kill $DAEMON_PID)
   data     : $PWD/var/data/  (JSONL — human-readable, diffable, back this up)
-  search   : $PWD/var/index.db  (derived SQLite index, rebuildable from JSONL)
+  reads    : $PWD/var/derived/index.db  (derived SQLite projection, rebuildable from JSONL)
 
 Choose the agent integration
 ----------------------------

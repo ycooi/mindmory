@@ -58,7 +58,7 @@ func testSetLifecycle(t *testing.T, store *Store, memoryID string, next domain.L
 		t.Fatal(err)
 	}
 	if store.Index != nil {
-		if err := store.Index.Remove(memoryID); err != nil {
+		if err := store.Index.Upsert(row); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -224,7 +224,7 @@ func TestCanonicalEligibilityDefeatsStaleIndexAndPolicyLeaks(t *testing.T) {
 	// must still reject it after reloading the canonical row.
 	stale := global
 	stale.Lifecycle = "ACTIVE"
-	if err := store.Index.Upsert(stale); err != nil {
+	if err := insertIndexedRow(store.Index.db, stale); err != nil {
 		t.Fatalf("inject stale index row: %v", err)
 	}
 	hits, err := server.searchMemories(ctx, scope, retrieval.SearchRequest{
@@ -235,6 +235,168 @@ func TestCanonicalEligibilityDefeatsStaleIndexAndPolicyLeaks(t *testing.T) {
 	}
 	if len(hits) != 0 {
 		t.Fatalf("stale/project/secret candidate leaked: %+v", hits)
+	}
+}
+
+func TestSQLiteReadProjectionWorksWithoutCanonicalMaps(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	principal := auth.Principal{Key: "sqlite-reader", Type: auth.PrincipalMCP}
+	session, err := store.UpsertSession(ctx, principal, "sqlite-session", "SQLite read projection", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageID, _, err := store.InsertMessage(ctx, session.SessionID, testMessage("sqlite-message", "Remember the SQLite projection sentinel.", time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := MemoryRow{MemoryID: "sqlite-memory", Kind: "USER_PREFERENCE", Subject: "SQLite projection sentinel",
+		Content: "The complete memory record is read from SQLite.", ContentHash: hashContent("The complete memory record is read from SQLite."),
+		Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 1, Importance: .6,
+		Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: 1}
+	if err := store.insertMemoryFixture(ctx, memory); err != nil {
+		t.Fatal(err)
+	}
+	quote := "SQLite projection sentinel"
+	if err := store.InsertMessageEvidence(ctx, memory.MemoryID, messageID, hashContent(quote), 13, 39, "ASSERTS"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a future low-RAM daemon after canonical startup materialization
+	// has been released. Every model-facing read below must still work.
+	store.mu.Lock()
+	store.memories = map[string]MemoryRow{}
+	store.messages = map[string]MessageRow{}
+	store.evidence = map[string][]MessageEvidenceRow{}
+	store.mu.Unlock()
+
+	loaded, err := store.LoadMemoryRow(ctx, memory.MemoryID)
+	if err != nil || loaded.Content != memory.Content {
+		t.Fatalf("SQLite memory read failed: %+v err=%v", loaded, err)
+	}
+	archived, err := store.LoadMessageEvidence(ctx, session.SessionID, messageID)
+	if err != nil || archived.Content == "" {
+		t.Fatalf("SQLite message read failed: %+v err=%v", archived, err)
+	}
+	links, err := store.MessageEvidenceFor(ctx, memory.MemoryID)
+	if err != nil || len(links) != 1 || links[0].MessageContent == "" {
+		t.Fatalf("SQLite evidence join failed: %+v err=%v", links, err)
+	}
+	server := &Server{Store: store, Aliases: retrieval.NewAliasExpander(nil), Log: testLogger()}
+	hits, err := server.searchMemories(ctx, retrieval.SessionScope{SessionID: session.SessionID},
+		retrieval.SearchRequest{SessionID: session.SessionID, Query: "SQLite projection sentinel", Limit: 5}, false)
+	if err != nil || len(hits) != 1 || hits[0].MemoryID != memory.MemoryID {
+		t.Fatalf("SQLite-only search failed: %+v err=%v", hits, err)
+	}
+}
+
+func TestSQLiteReadProjectionRebuildsFromCanonicalJSONL(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	store, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	principal := auth.Principal{Key: "rebuild-reader", Type: auth.PrincipalMCP}
+	session, err := store.UpsertSession(ctx, principal, "rebuild-session", "Rebuild", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageID, _, err := store.InsertMessage(ctx, session.SessionID, testMessage("rebuild-message", "Canonical rebuild evidence", time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := MemoryRow{MemoryID: "rebuild-memory", Kind: "PROJECT_DECISION", Subject: "canonical rebuild",
+		Content: "SQLite can be deleted and regenerated", ContentHash: hashContent("SQLite can be deleted and regenerated"),
+		Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 1, Importance: .6,
+		Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: 1}
+	if err := store.insertMemoryFixture(ctx, memory); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertMessageEvidence(ctx, memory.MemoryID, messageID, hashContent("Canonical rebuild evidence"), 0, 26, "ASSERTS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "derived")); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	loaded, err := reopened.LoadMemoryRow(ctx, memory.MemoryID)
+	if err != nil || loaded.Content != memory.Content {
+		t.Fatalf("rebuilt memory projection failed: %+v err=%v", loaded, err)
+	}
+	links, err := reopened.MessageEvidenceFor(ctx, memory.MemoryID)
+	if err != nil || len(links) != 1 || links[0].MessageContent != "Canonical rebuild evidence" {
+		t.Fatalf("rebuilt evidence projection failed: %+v err=%v", links, err)
+	}
+}
+
+func TestLowRAMExperimentPersistsSnapshotAndRestart(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	store, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	principal := auth.Principal{Key: "low-ram", Type: auth.PrincipalMCP}
+	session, err := store.UpsertSession(ctx, principal, "low-ram-session", "Low RAM", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageID, _, err := store.InsertMessage(ctx, session.SessionID, testMessage("low-ram-message", "Low RAM evidence survives restart", time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := MemoryRow{MemoryID: "low-ram-memory", Kind: "USER_PREFERENCE", Subject: "low RAM persistence",
+		Content: "SQLite serves this complete record", ContentHash: hashContent("SQLite serves this complete record"),
+		Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 1, Importance: .6,
+		Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: .5}
+	if err := store.insertMemoryFixture(ctx, memory); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertMessageEvidence(ctx, memory.MemoryID, messageID, hashContent("Low RAM evidence survives restart"), 0, 33, "ASSERTS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnableLowRAMExperiment(); err != nil {
+		t.Fatal(err)
+	}
+	if !store.LowRAMEnabled() || store.memories != nil || store.messages != nil || store.evidence != nil {
+		t.Fatal("archive-sized maps were not released")
+	}
+	if err := store.RecordAccess(ctx, memory.MemoryID, session.SessionID, retrieval.AccessRecall); err != nil {
+		t.Fatal(err)
+	}
+	stats := store.ReadOnlyStatistics()
+	if stats.Memories != 1 || stats.Messages != 1 || stats.EvidenceLinks != 1 {
+		t.Fatalf("SQLite statistics: %+v", stats)
+	}
+	if _, err := store.CreateSnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	loaded, err := reopened.LoadMemoryRow(ctx, memory.MemoryID)
+	if err != nil || loaded.Content != memory.Content || loaded.AccessCount != 1 || loaded.Activation != 1 {
+		t.Fatalf("low-RAM restart memory: %+v err=%v", loaded, err)
+	}
+	links, err := reopened.MessageEvidenceFor(ctx, memory.MemoryID)
+	if err != nil || len(links) != 1 || links[0].MessageContent == "" {
+		t.Fatalf("low-RAM restart evidence: %+v err=%v", links, err)
 	}
 }
 
@@ -798,6 +960,13 @@ func TestMisledConfidenceNeverRecovers(t *testing.T) {
 	}
 	if !got.Disputed {
 		t.Fatal("misled memory should be marked disputed")
+	}
+	if err := store.FlushAccessBumps(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.LoadMemoryRow(ctx, "mis")
+	if got.AccessCount != 1 {
+		t.Fatalf("feedback access counted %d times, want 1", got.AccessCount)
 	}
 	// Simulate 100 sessions passing: confidence must NOT recover.
 	if eff := ActivationEffective(0.9, 100, 60); eff <= 0 {

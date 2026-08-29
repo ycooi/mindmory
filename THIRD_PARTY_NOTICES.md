@@ -9,7 +9,7 @@ by every non-standard Go module compiled into the release binaries. It is
 included in every binary distribution and must be retained when redistributing
 those binaries.
 
-The compiled module inventory for release 0.1.0 is:
+The compiled module inventory for release 0.1.1 is:
 
 | Module | Version |
 | --- | --- |

@@ -1,4 +1,4 @@
-// Package lite: SQLite search index (derived, disposable).
+// Package lite: complete SQLite read projection (derived, disposable).
 //
 // JSONL is the canonical truth; SQLite is a derived index that can always
 // be rebuilt from the JSONL files. It exists because JSONL is hard to
@@ -37,8 +37,28 @@ CREATE TABLE IF NOT EXISTS memories_current (
   embedding_input_hash TEXT NOT NULL, lifecycle TEXT NOT NULL,
   sensitivity TEXT NOT NULL, scope TEXT NOT NULL,
   project_key TEXT NOT NULL DEFAULT '', disputed INTEGER NOT NULL DEFAULT 0,
-  updated_at_unix_nano INTEGER NOT NULL
+  secret_like INTEGER NOT NULL DEFAULT 0,
+  instruction_like INTEGER NOT NULL DEFAULT 0,
+  updated_at_unix_nano INTEGER NOT NULL,
+  record_json BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS messages_current (
+  message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+  external_message_id TEXT NOT NULL, role TEXT NOT NULL,
+  message_seq INTEGER NOT NULL, turn_seq INTEGER NOT NULL,
+  record_json BLOB NOT NULL,
+  UNIQUE(session_id, external_message_id)
+);
+CREATE INDEX IF NOT EXISTS messages_session_order
+  ON messages_current(session_id, turn_seq DESC, message_seq DESC);
+CREATE TABLE IF NOT EXISTS evidence_current (
+  memory_id TEXT NOT NULL, message_id TEXT NOT NULL,
+  quote_hash TEXT NOT NULL, relation TEXT NOT NULL,
+  created_at_unix_nano INTEGER NOT NULL, record_json BLOB NOT NULL,
+  PRIMARY KEY(memory_id, message_id, quote_hash, relation)
+);
+CREATE INDEX IF NOT EXISTS evidence_memory_order
+  ON evidence_current(memory_id, created_at_unix_nano);
 CREATE TABLE IF NOT EXISTS vector_refs (
   generation TEXT NOT NULL, vector_ordinal INTEGER NOT NULL,
   source_type TEXT NOT NULL, source_id TEXT NOT NULL,
@@ -58,9 +78,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 `
 
-// MemoryIndex is the SQLite-backed search index over memories.
+// MemoryIndex is the SQLite-backed read projection for memories, archived
+// messages, evidence, FTS search, and vector references.
 type MemoryIndex struct {
 	db *sql.DB
+}
+
+type ReadProjectionCounts struct {
+	Messages, Memories, ActiveMemories, InactiveMemories   int
+	SecretLikeMemories, InstructionMemories, EvidenceLinks int
+}
+
+// VectorProjectionCounts summarizes vector freshness without materializing
+// the memory archive. This keeps routine status/MCP health calls bounded in
+// low-RAM mode even when the archive contains hundreds of thousands of rows.
+type VectorProjectionCounts struct {
+	Active, Missing, Stale, Tombstoned int
 }
 
 // OpenMemoryIndex opens (creating if needed) the SQLite index at path.
@@ -81,7 +114,27 @@ func OpenMemoryIndex(path string) (*MemoryIndex, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(indexSchema); err != nil {
+	var schemaVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("read index schema version: %w", err)
+	}
+	// This database is disposable. Recreating an older projection is safer
+	// than carrying a chain of migrations for data that canonical JSONL can
+	// reproduce exactly.
+	if schemaVersion != 4 {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS memories_fts;
+DROP TABLE IF EXISTS evidence_current;
+DROP TABLE IF EXISTS messages_current;
+DROP TABLE IF EXISTS vector_refs;
+DROP TABLE IF EXISTS memories_current;
+DROP TABLE IF EXISTS projection_state;
+DROP TABLE IF EXISTS index_meta;`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("reset old index schema: %w", err)
+		}
+	}
+	if _, err := db.Exec(indexSchema + "\nPRAGMA user_version=4;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("index schema: %w", err)
 	}
@@ -105,7 +158,7 @@ func (m *MemoryIndex) Checkpoint() error {
 // row changes the fingerprint, so the index knows when it is stale.
 func Fingerprint(rows []MemoryRow) string {
 	hasher := sha256.New()
-	_, _ = hasher.Write([]byte("index-schema=2;tokenizer=fts5-trigram;normalization=1\n"))
+	_, _ = hasher.Write([]byte("index-schema=4;tokenizer=fts5-trigram;normalization=1\n"))
 	rows = append([]MemoryRow(nil), rows...)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
 	for _, row := range rows {
@@ -137,6 +190,39 @@ func (m *MemoryIndex) storedFingerprint() (string, error) {
 	return value, err
 }
 
+func (m *MemoryIndex) storedSupportFingerprint() (string, error) {
+	var value string
+	err := m.db.QueryRow("SELECT value FROM index_meta WHERE key='support_fingerprint'").Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+func SupportFingerprint(messages []MessageRow, evidence []MessageEvidenceRow) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("support-schema=1\n"))
+	messages = append([]MessageRow(nil), messages...)
+	sort.Slice(messages, func(i, j int) bool { return messages[i].MessageID < messages[j].MessageID })
+	for _, row := range messages {
+		raw, _ := json.Marshal(row)
+		_, _ = hasher.Write(raw)
+	}
+	evidence = append([]MessageEvidenceRow(nil), evidence...)
+	sort.Slice(evidence, func(i, j int) bool {
+		left := evidence[i].MemoryID + "\x00" + evidence[i].MessageID + "\x00" + evidence[i].QuoteHash + "\x00" + evidence[i].Relation
+		right := evidence[j].MemoryID + "\x00" + evidence[j].MessageID + "\x00" + evidence[j].QuoteHash + "\x00" + evidence[j].Relation
+		return left < right
+	})
+	for _, row := range evidence {
+		row.MessageContent = ""
+		row.OccurredAt = time.Time{}
+		raw, _ := json.Marshal(row)
+		_, _ = hasher.Write(raw)
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
 // RebuildFrom replaces the entire index content with rows and records the
 // fingerprint. It is the recovery path after JSONL migration or index loss.
 func (m *MemoryIndex) RebuildFrom(rows []MemoryRow) error {
@@ -165,7 +251,7 @@ func (m *MemoryIndex) RebuildFrom(rows []MemoryRow) error {
 	}
 	fp := Fingerprint(rows)
 	if _, err := tx.Exec(`INSERT INTO projection_state(projection_name,projection_version,source_fingerprint,updated_at_unix_nano)
-		VALUES('memory',2,?,?) ON CONFLICT(projection_name) DO UPDATE SET projection_version=excluded.projection_version,
+		VALUES('memory',4,?,?) ON CONFLICT(projection_name) DO UPDATE SET projection_version=excluded.projection_version,
 		source_fingerprint=excluded.source_fingerprint,updated_at_unix_nano=excluded.updated_at_unix_nano`, fp, time.Now().UnixNano()); err != nil {
 		return err
 	}
@@ -189,12 +275,17 @@ func insertIndexedRow(tx indexWriter, row MemoryRow) error {
 }
 
 func upsertCurrentRow(tx indexWriter, row MemoryRow) error {
-	_, err := tx.Exec(`INSERT INTO memories_current(memory_id,kind,subject,content,content_hash,embedding_input_hash,lifecycle,sensitivity,scope,project_key,disputed,updated_at_unix_nano)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET kind=excluded.kind,subject=excluded.subject,
+	record, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO memories_current(memory_id,kind,subject,content,content_hash,embedding_input_hash,lifecycle,sensitivity,scope,project_key,disputed,secret_like,instruction_like,updated_at_unix_nano,record_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET kind=excluded.kind,subject=excluded.subject,
 		content=excluded.content,content_hash=excluded.content_hash,embedding_input_hash=excluded.embedding_input_hash,lifecycle=excluded.lifecycle,
-		sensitivity=excluded.sensitivity,scope=excluded.scope,project_key=excluded.project_key,disputed=excluded.disputed,updated_at_unix_nano=excluded.updated_at_unix_nano`,
+		sensitivity=excluded.sensitivity,scope=excluded.scope,project_key=excluded.project_key,disputed=excluded.disputed,updated_at_unix_nano=excluded.updated_at_unix_nano,
+		secret_like=excluded.secret_like,instruction_like=excluded.instruction_like,record_json=excluded.record_json`,
 		row.MemoryID, row.Kind, row.Subject, row.Content, row.ContentHash, EmbeddingInputHash(row), row.Lifecycle,
-		row.Sensitivity, row.ScopeType, row.ProjectKey, row.Disputed, row.UpdatedAt.UnixNano())
+		row.Sensitivity, row.ScopeType, row.ProjectKey, row.Disputed, boolInt(row.SecretLike), boolInt(row.InstructionLike), row.UpdatedAt.UnixNano(), record)
 	return err
 }
 
@@ -216,6 +307,380 @@ func (m *MemoryIndex) Upsert(row MemoryRow) error {
 		if err := insertIndexedRow(tx, row); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// LoadMemory returns the complete disposable read projection for one memory.
+func (m *MemoryIndex) LoadMemory(memoryID string) (MemoryRow, error) {
+	var raw []byte
+	if err := m.db.QueryRow(`SELECT record_json FROM memories_current WHERE memory_id=?`, memoryID).Scan(&raw); err != nil {
+		return MemoryRow{}, err
+	}
+	var row MemoryRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return MemoryRow{}, err
+	}
+	return row, nil
+}
+
+// LoadMemories resolves an FTS candidate batch in one SQLite query and keeps
+// the caller's candidate order. This avoids one database round trip per hit.
+func (m *MemoryIndex) LoadMemories(memoryIDs []string) ([]MemoryRow, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	if len(memoryIDs) > 500 {
+		return nil, fmt.Errorf("too many memory ids")
+	}
+	marks := make([]string, len(memoryIDs))
+	args := make([]any, len(memoryIDs))
+	for i, id := range memoryIDs {
+		marks[i] = "?"
+		args[i] = id
+	}
+	rows, err := m.db.Query(`SELECT memory_id,record_json FROM memories_current WHERE memory_id IN (`+strings.Join(marks, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := make(map[string]MemoryRow, len(memoryIDs))
+	for rows.Next() {
+		var id string
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		var row MemoryRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		byID[id] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]MemoryRow, 0, len(memoryIDs))
+	for _, id := range memoryIDs {
+		if row, ok := byID[id]; ok {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+// EligibleMemoryRows reads complete records from SQLite. JSONL is never
+// opened on this path; it is only the rebuild authority.
+func (m *MemoryIndex) EligibleMemoryRows(projectKey string, kinds []string, historical bool, limit int) ([]MemoryRow, error) {
+	query := `SELECT record_json FROM memories_current WHERE sensitivity='NORMAL'
+		AND (scope='GLOBAL' OR (? <> '' AND scope='PROJECT' AND project_key=?))`
+	args := []any{projectKey, projectKey}
+	if !historical {
+		query += ` AND lifecycle='ACTIVE'`
+	}
+	if len(kinds) > 0 {
+		marks := make([]string, len(kinds))
+		for i, kind := range kinds {
+			marks[i] = "?"
+			args = append(args, kind)
+		}
+		query += ` AND kind IN (` + strings.Join(marks, ",") + `)`
+	}
+	query += ` ORDER BY updated_at_unix_nano DESC, memory_id ASC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemoryRow
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var row MemoryRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (m *MemoryIndex) AllMemories() ([]MemoryRow, error) {
+	rows, err := m.db.Query(`SELECT record_json FROM memories_current ORDER BY memory_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemoryRow
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var row MemoryRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (m *MemoryIndex) AllMessages() ([]MessageRow, error) {
+	rows, err := m.db.Query(`SELECT record_json FROM messages_current ORDER BY message_seq`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageRow
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var row MessageRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (m *MemoryIndex) AllEvidence() ([]MessageEvidenceRow, error) {
+	rows, err := m.db.Query(`SELECT record_json FROM evidence_current ORDER BY memory_id,created_at_unix_nano`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageEvidenceRow
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var row MessageEvidenceRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (m *MemoryIndex) Counts() (ReadProjectionCounts, error) {
+	var c ReadProjectionCounts
+	err := m.db.QueryRow(`SELECT
+		(SELECT count(*) FROM messages_current),
+		(SELECT count(*) FROM memories_current),
+		(SELECT count(*) FROM memories_current WHERE lifecycle='ACTIVE'),
+		(SELECT count(*) FROM memories_current WHERE lifecycle<>'ACTIVE'),
+		(SELECT count(*) FROM memories_current WHERE secret_like=1),
+		(SELECT count(*) FROM memories_current WHERE instruction_like=1),
+		(SELECT count(*) FROM evidence_current)`).Scan(&c.Messages, &c.Memories, &c.ActiveMemories, &c.InactiveMemories,
+		&c.SecretLikeMemories, &c.InstructionMemories, &c.EvidenceLinks)
+	return c, err
+}
+
+func (m *MemoryIndex) VectorCounts(generation string) (VectorProjectionCounts, error) {
+	var c VectorProjectionCounts
+	const eligible = `lifecycle='ACTIVE' AND sensitivity='NORMAL' AND secret_like=0 AND instruction_like=0`
+	if err := m.db.QueryRow(`SELECT count(*) FROM memories_current WHERE ` + eligible).Scan(&c.Active); err != nil {
+		return c, err
+	}
+	if generation == "" {
+		c.Missing = c.Active
+		return c, nil
+	}
+	if err := m.db.QueryRow(`SELECT count(*) FROM memories_current mc
+		WHERE mc.`+eligible+` AND NOT EXISTS (
+			SELECT 1 FROM vector_refs vr WHERE vr.generation=? AND vr.source_type='MEMORY'
+			AND vr.source_id=mc.memory_id AND vr.embedding_input_hash=mc.embedding_input_hash AND vr.stale=0
+		)`, generation).Scan(&c.Missing); err != nil {
+		return c, err
+	}
+	if err := m.db.QueryRow(`SELECT count(*) FROM vector_refs vr
+		JOIN memories_current mc ON mc.memory_id=vr.source_id
+		WHERE vr.generation=? AND vr.source_type='MEMORY' AND mc.`+eligible+`
+		AND (vr.stale<>0 OR vr.embedding_input_hash<>mc.embedding_input_hash)`, generation).Scan(&c.Stale); err != nil {
+		return c, err
+	}
+	if err := m.db.QueryRow(`SELECT count(*) FROM vector_refs vr
+		LEFT JOIN memories_current mc ON mc.memory_id=vr.source_id
+		WHERE vr.generation=? AND vr.source_type='MEMORY' AND (
+			mc.memory_id IS NULL OR mc.lifecycle<>'ACTIVE' OR mc.sensitivity<>'NORMAL'
+			OR mc.secret_like<>0 OR mc.instruction_like<>0
+		)`, generation).Scan(&c.Tombstoned); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+func (m *MemoryIndex) LearnerMessages(limit int) ([]learnerCandidate, error) {
+	rows, err := m.db.Query(`SELECT m.record_json FROM messages_current m
+		WHERE m.role='user' AND NOT EXISTS (SELECT 1 FROM evidence_current e WHERE e.message_id=m.message_id)
+		ORDER BY m.message_seq DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []learnerCandidate
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var row MessageRow
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, err
+		}
+		if row.Sensitivity != "NORMAL" || row.SecretLike || row.InstructionLike {
+			continue
+		}
+		out = append(out, learnerCandidate{sessionID: row.SessionID, messageID: row.MessageID, content: row.Content, occurredAt: row.OccurredAt})
+	}
+	return out, rows.Err()
+}
+
+func upsertMessageRow(tx indexWriter, row MessageRow) error {
+	record, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO messages_current(message_id,session_id,external_message_id,role,message_seq,turn_seq,record_json)
+		VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET session_id=excluded.session_id,
+		external_message_id=excluded.external_message_id,role=excluded.role,message_seq=excluded.message_seq,
+		turn_seq=excluded.turn_seq,record_json=excluded.record_json`, row.MessageID, row.SessionID,
+		row.ExternalMessageID, row.Role, row.MessageSeq, row.TurnSeq, record)
+	return err
+}
+
+func (m *MemoryIndex) UpsertMessage(row MessageRow) error {
+	return upsertMessageRow(m.db, row)
+}
+
+func (m *MemoryIndex) LoadMessage(messageID string) (MessageRow, error) {
+	var raw []byte
+	if err := m.db.QueryRow(`SELECT record_json FROM messages_current WHERE message_id=?`, messageID).Scan(&raw); err != nil {
+		return MessageRow{}, err
+	}
+	var row MessageRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return MessageRow{}, err
+	}
+	return row, nil
+}
+
+func (m *MemoryIndex) MessageByExternal(sessionID, externalID string) (MessageRow, error) {
+	var raw []byte
+	if err := m.db.QueryRow(`SELECT record_json FROM messages_current WHERE session_id=? AND external_message_id=?`, sessionID, externalID).Scan(&raw); err != nil {
+		return MessageRow{}, err
+	}
+	var row MessageRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return MessageRow{}, err
+	}
+	return row, nil
+}
+
+func (m *MemoryIndex) LatestUserMessage(sessionID string) (MessageRow, error) {
+	var raw []byte
+	if err := m.db.QueryRow(`SELECT record_json FROM messages_current WHERE session_id=? AND role='user'
+		ORDER BY turn_seq DESC,message_seq DESC LIMIT 1`, sessionID).Scan(&raw); err != nil {
+		return MessageRow{}, err
+	}
+	var row MessageRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return MessageRow{}, err
+	}
+	return row, nil
+}
+
+func upsertEvidenceRow(tx indexWriter, row MessageEvidenceRow) error {
+	record, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO evidence_current(memory_id,message_id,quote_hash,relation,created_at_unix_nano,record_json)
+		VALUES(?,?,?,?,?,?) ON CONFLICT(memory_id,message_id,quote_hash,relation) DO UPDATE SET
+		created_at_unix_nano=excluded.created_at_unix_nano,record_json=excluded.record_json`, row.MemoryID,
+		row.MessageID, row.QuoteHash, row.Relation, row.CreatedAt.UnixNano(), record)
+	return err
+}
+
+func (m *MemoryIndex) UpsertEvidence(row MessageEvidenceRow) error {
+	return upsertEvidenceRow(m.db, row)
+}
+
+func (m *MemoryIndex) EvidenceFor(memoryID string) ([]MessageEvidenceRow, error) {
+	rows, err := m.db.Query(`SELECT e.record_json,m.record_json FROM evidence_current e
+		LEFT JOIN messages_current m ON m.message_id=e.message_id WHERE e.memory_id=?
+		ORDER BY e.created_at_unix_nano ASC`, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageEvidenceRow
+	for rows.Next() {
+		var evidenceRaw []byte
+		var messageRaw []byte
+		if err := rows.Scan(&evidenceRaw, &messageRaw); err != nil {
+			return nil, err
+		}
+		var evidence MessageEvidenceRow
+		if err := json.Unmarshal(evidenceRaw, &evidence); err != nil {
+			return nil, err
+		}
+		if len(messageRaw) > 0 {
+			var message MessageRow
+			if err := json.Unmarshal(messageRaw, &message); err != nil {
+				return nil, err
+			}
+			evidence.MessageContent = message.Content
+			evidence.OccurredAt = message.OccurredAt
+		}
+		out = append(out, evidence)
+	}
+	return out, rows.Err()
+}
+
+// ReplaceReadSupport rebuilds message and evidence projections in one
+// transaction after canonical startup loading or index loss.
+func (m *MemoryIndex) ReplaceReadSupport(messages []MessageRow, evidence []MessageEvidenceRow) error {
+	tx, err := m.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM evidence_current`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM messages_current`); err != nil {
+		return err
+	}
+	for _, row := range messages {
+		if err := upsertMessageRow(tx, row); err != nil {
+			return err
+		}
+	}
+	for _, row := range evidence {
+		// Do not duplicate message bodies in the evidence record; EvidenceFor
+		// hydrates them through the indexed message join.
+		row.MessageContent = ""
+		row.OccurredAt = time.Time{}
+		if err := upsertEvidenceRow(tx, row); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO index_meta(key,value) VALUES('support_fingerprint',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, SupportFingerprint(messages, evidence)); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

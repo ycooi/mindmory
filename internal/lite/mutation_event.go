@@ -86,7 +86,12 @@ func (s *Store) CommitMutation(_ context.Context, commit MutationCommit) (Mutati
 		return MutationCommitResult{}, fmt.Errorf("proposal required")
 	}
 	if commit.NewMemory != nil {
-		if _, exists := s.memories[commit.NewMemory.MemoryID]; exists {
+		_, exists := s.memories[commit.NewMemory.MemoryID]
+		if s.lowRAM {
+			_, err := s.Index.LoadMemory(commit.NewMemory.MemoryID)
+			exists = err == nil
+		}
+		if exists {
 			return MutationCommitResult{}, fmt.Errorf("new memory already exists")
 		}
 		if commit.NewMemory.StateVersion <= 0 {
@@ -107,6 +112,11 @@ func (s *Store) CommitMutation(_ context.Context, commit MutationCommit) (Mutati
 	}
 	if commit.TargetMemoryID != "" {
 		target, exists := s.memories[commit.TargetMemoryID]
+		if s.lowRAM {
+			var err error
+			target, err = s.Index.LoadMemory(commit.TargetMemoryID)
+			exists = err == nil
+		}
 		if !exists || target.Lifecycle != string(domain.LifecycleActive) ||
 			target.StateVersion != commit.ExpectedTargetVersion {
 			return MutationCommitResult{}, fmt.Errorf("target version conflict")
@@ -209,13 +219,13 @@ func (s *Store) applyMutationEventLocked(event MemoryMutationEvent) {
 			}
 		}
 	}
-	if event.NewMemory != nil {
+	if event.NewMemory != nil && !s.lowRAM {
 		s.memories[event.NewMemory.MemoryID] = *event.NewMemory
 	}
-	if event.UpdatedMemory != nil {
+	if event.UpdatedMemory != nil && !s.lowRAM {
 		s.memories[event.UpdatedMemory.MemoryID] = *event.UpdatedMemory
 	}
-	if event.TargetMemoryID != "" && event.TargetLifecycle != "" {
+	if event.TargetMemoryID != "" && event.TargetLifecycle != "" && !s.lowRAM {
 		if row, ok := s.memories[event.TargetMemoryID]; ok {
 			row.Lifecycle = string(event.TargetLifecycle)
 			row.StateVersion = event.ExpectedTargetVersion + 1
@@ -224,7 +234,7 @@ func (s *Store) applyMutationEventLocked(event MemoryMutationEvent) {
 		}
 	}
 	evidenceID := event.Evidence.MemoryID
-	if evidenceID != "" {
+	if evidenceID != "" && !s.lowRAM {
 		duplicate := false
 		for _, existing := range s.evidence[evidenceID] {
 			if existing.MessageID == event.Evidence.MessageID &&
@@ -236,10 +246,6 @@ func (s *Store) applyMutationEventLocked(event MemoryMutationEvent) {
 		}
 		if !duplicate {
 			row := event.Evidence
-			if message, ok := s.messages[row.MessageID]; ok {
-				row.MessageContent = message.Content
-				row.OccurredAt = message.OccurredAt
-			}
 			s.evidence[evidenceID] = append(s.evidence[evidenceID], row)
 		}
 	}
@@ -260,14 +266,18 @@ func (s *Store) applyMutationEventLocked(event MemoryMutationEvent) {
 }
 
 func (s *Store) refreshMutationProjectionsLocked(event MemoryMutationEvent) error {
-	if err := s.flushKindLocked("memories", s.memoriesJSONL()); err != nil {
-		return err
+	if !s.lowRAM {
+		if err := s.flushKindLocked("memories", s.memoriesJSONL()); err != nil {
+			return err
+		}
 	}
 	if err := s.flushKindLocked("proposals", s.proposalsJSONL()); err != nil {
 		return err
 	}
-	if err := s.flushEvidenceLocked(); err != nil {
-		return err
+	if !s.lowRAM {
+		if err := s.flushEvidenceLocked(); err != nil {
+			return err
+		}
 	}
 	if err := s.flushKindLocked("continuity", s.continuityJSONL()); err != nil {
 		return err
@@ -285,13 +295,30 @@ func (s *Store) refreshMutationProjectionsLocked(event MemoryMutationEvent) erro
 		}
 		if event.TargetMemoryID != "" {
 			target := s.memories[event.TargetMemoryID]
+			if s.lowRAM {
+				var err error
+				target, err = s.Index.LoadMemory(event.TargetMemoryID)
+				if err == nil && event.TargetLifecycle != "" {
+					target.Lifecycle = string(event.TargetLifecycle)
+					target.StateVersion = event.ExpectedTargetVersion + 1
+					target.UpdatedAt = event.CreatedAt
+				}
+			}
 			if target.MemoryID != "" {
 				if err := s.Index.Upsert(target); err != nil {
 					return err
 				}
 			}
 		}
+		if event.Evidence.MemoryID != "" {
+			if err := s.Index.UpsertEvidence(event.Evidence); err != nil {
+				return err
+			}
+		}
 	}
+	// In low-RAM mode the fsynced signed event above is canonical. Compatibility
+	// JSONL projections are materialized at snapshot, checkpoint, or shutdown,
+	// not rewritten in full for every mutation.
 	return nil
 }
 

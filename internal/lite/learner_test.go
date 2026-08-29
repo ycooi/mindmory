@@ -115,6 +115,20 @@ func TestLearnerExtractGovernance(t *testing.T) {
 	}
 }
 
+func TestLowRAMExperimentLearnerUsesSQLite(t *testing.T) {
+	server, store := newLearnerFixture(t)
+	if err := store.EnableLowRAMExperiment(); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := server.LearnerExtract(context.Background(), server.LearnerPrincipal(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Scanned == 0 || summary.Applied+summary.Staged == 0 {
+		t.Fatalf("low-RAM learner did not process SQLite messages: %+v", summary)
+	}
+}
+
 func TestAdminLearnerExtractEndpoint(t *testing.T) {
 	server, _ := newLearnerFixture(t)
 	request := httptest.NewRequest(http.MethodPost, "/v1/admin/learner/extract", nil)

@@ -12,16 +12,26 @@ MINDMORY_CURSOR_SIGNING_KEY=replace-with-at-least-32-random-bytes
 
 # --- Host port and data ---------------------------------------------------
 MINDMORY_HTTP_PORT=58080
-# Where memories live (JSONL canonical store + derived SQLite index).
+# Base directory for relative paths, followed by independently configurable
+# canonical, derived, vector, snapshot, and exchange locations.
+MINDMORY_ROOT_DIR=.
 MINDMORY_DATA_DIR=var/data
+MINDMORY_DERIVED_DIR=var/derived
+MINDMORY_VECTOR_DIR=var/derived/vectors
+MINDMORY_SNAPSHOT_DIR=var/data/snapshots
+MINDMORY_EXPORT_DIR=var/export
 # Bind address. Keep 127.0.0.1 (loopback) for a single-user machine.
 MINDMORY_ADDRESS=127.0.0.1:58080
 # local = trust loopback (single-user default). "token" enforces Bearer
 # verification (recommended if the surface is ever exposed beyond loopback).
 MINDMORY_AUTH=local
+# Experimental: release archive-sized Go maps after SQLite projection startup.
+# Reduces steady-state RAM; startup still temporarily materializes JSONL.
+MINDMORY_LOW_RAM_EXPERIMENT=0
 
 # --- Daemon credentials -----------------------------------------------------
 # Operator token (always enforced on administrative routes). >= 24 chars.
+MINDMORY_ADMIN_ENDPOINT=http://127.0.0.1:58080
 MINDMORY_ADMIN_TOKEN=replace-with-a-random-admin-token
 # Client principals — the token your assistant presents. Token >= 24 chars.
 # Keep the value single-quoted: the outer quotes are stripped by both shell

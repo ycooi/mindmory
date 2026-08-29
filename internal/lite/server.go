@@ -1712,18 +1712,19 @@ func (s *Server) searchMemories(ctx context.Context, scope retrieval.SessionScop
 				// is authoritative, the index is derived.
 				continue
 			}
-			for _, id := range ids {
-				if seen[id] {
-					continue
-				}
-				row, err := s.Store.LoadMemoryRow(ctx, id)
-				if err != nil {
+			rows, err := s.Store.Index.LoadMemories(ids)
+			if err != nil {
+				s.Log.Error("candidate hydration failed", "error", err)
+				continue
+			}
+			for _, row := range rows {
+				if seen[row.MemoryID] {
 					continue
 				}
 				if !memoryRowEligible(scope, row, false) || !memoryKindRequested(row, request.Kinds) {
 					continue
 				}
-				seen[id] = true
+				seen[row.MemoryID] = true
 				candidates = append(candidates, candidateRow{row: row, query: q})
 			}
 		}

@@ -2,6 +2,7 @@ package lite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sort"
 	"strings"
@@ -77,14 +78,24 @@ func (s *Store) InsertMessage(ctx context.Context, sessionID string, m checkpoin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Idempotent by external id within the session.
-	for id, row := range s.messages {
-		if row.SessionID == sessionID && row.ExternalMessageID == m.ExternalMessageID {
-			if row.Role != string(m.Role) || row.ContentType != m.ContentType ||
-				row.Content != m.Content || row.ContentHash != m.Hash ||
-				row.AssistantID != m.AssistantID || row.AssistantName != m.AssistantName {
+	if s.Index != nil {
+		if row, err := s.Index.MessageByExternal(sessionID, m.ExternalMessageID); err == nil {
+			if row.Role != string(m.Role) || row.ContentType != m.ContentType || row.Content != m.Content ||
+				row.ContentHash != m.Hash || row.AssistantID != m.AssistantID || row.AssistantName != m.AssistantName {
 				return "", false, errMessageConflict
 			}
-			return id, true, nil
+			return row.MessageID, true, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return "", false, err
+		}
+	} else {
+		for id, row := range s.messages {
+			if row.SessionID == sessionID && row.ExternalMessageID == m.ExternalMessageID {
+				if row.Role != string(m.Role) || row.ContentType != m.ContentType || row.Content != m.Content || row.ContentHash != m.Hash {
+					return "", false, errMessageConflict
+				}
+				return id, true, nil
+			}
 		}
 	}
 	secretLike, instructionLike := archive.DetectMessagePolicy(m.Content)
@@ -109,14 +120,30 @@ func (s *Store) InsertMessage(ctx context.Context, sessionID string, m checkpoin
 		}
 		return "", false, err
 	}
-	s.messages[id] = row
+	if !s.lowRAM {
+		s.messages[id] = row
+	}
+	if s.Index != nil {
+		if err := s.Index.UpsertMessage(row); err != nil {
+			return "", false, err
+		}
+	}
 	// messages.jsonl is now a compatibility projection. The segmented journal
 	// above is authoritative and was fsynced before the in-memory state changed.
-	_ = s.flushKindLocked("messages", s.messagesJSONL())
+	if !s.lowRAM {
+		_ = s.flushKindLocked("messages", s.messagesJSONL())
+	}
 	return id, false, nil
 }
 
 func (s *Store) LatestUserMessageID(ctx context.Context, sessionID string) (string, error) {
+	if s.Index != nil {
+		row, err := s.Index.LatestUserMessage(sessionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errNoRows
+		}
+		return row.MessageID, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var best string
@@ -136,6 +163,18 @@ func (s *Store) LatestUserMessageID(ctx context.Context, sessionID string) (stri
 }
 
 func (s *Store) LoadMessageEvidence(ctx context.Context, sessionID, messageID string) (archive.MessageEvidence, error) {
+	if s.Index != nil {
+		row, err := s.Index.LoadMessage(messageID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && row.SessionID != sessionID) {
+			return archive.MessageEvidence{}, errNoRows
+		}
+		if err != nil {
+			return archive.MessageEvidence{}, err
+		}
+		return archive.MessageEvidence{MessageID: row.MessageID, SessionID: row.SessionID, Role: archive.Role(row.Role),
+			Content: row.Content, ContentHash: row.ContentHash, Retrieved: false, SecretLike: row.SecretLike,
+			InstructionLike: row.InstructionLike, Sensitivity: policySensitivity(row.Sensitivity)}, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.messages[messageID]
@@ -181,7 +220,7 @@ func (s *Store) insertMemoryFixture(ctx context.Context, m MemoryRow) error {
 
 // FlushAccessBumps persists pending access bumps to the canonical file in
 // one atomic rewrite. Safe from any non-hot path; a no-op when nothing is
-// pending. The index needs no refresh — it never stored these counters.
+// pending. The complete SQLite read row is refreshed once per batch.
 func (s *Store) FlushAccessBumps() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,14 +232,32 @@ func (s *Store) flushAccessBumpsLocked() error {
 		return nil
 	}
 	for memoryID, bumps := range s.accessBumps {
-		row, ok := s.memories[memoryID]
+		var row MemoryRow
+		var ok bool
+		if s.lowRAM {
+			var err error
+			row, err = s.Index.LoadMemory(memoryID)
+			ok = err == nil
+		} else {
+			row, ok = s.memories[memoryID]
+		}
 		if !ok {
 			continue
 		}
 		row.AccessCount += bumps
-		s.memories[memoryID] = row
+		if !s.lowRAM {
+			s.memories[memoryID] = row
+		}
+		if s.Index != nil {
+			if err := s.Index.Upsert(row); err != nil {
+				return err
+			}
+		}
 	}
 	s.accessBumps = map[string]int64{}
+	if s.lowRAM {
+		return s.flushMemoriesFromIndexLocked()
+	}
 	return s.flushKindLocked("memories", s.memoriesJSONL())
 }
 
@@ -225,6 +282,13 @@ func promoteImportance(importance float64) float64 {
 }
 
 func (s *Store) LoadMemoryRow(ctx context.Context, memoryID string) (MemoryRow, error) {
+	if s.Index != nil {
+		row, err := s.Index.LoadMemory(memoryID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MemoryRow{}, errNoRows
+		}
+		return row, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.memories[memoryID]
@@ -235,6 +299,23 @@ func (s *Store) LoadMemoryRow(ctx context.Context, memoryID string) (MemoryRow, 
 }
 
 func (s *Store) EligibleMemories(ctx context.Context, scope retrieval.SessionScope, kinds []domain.Kind, limit int) ([]MemoryRow, error) {
+	if s.Index != nil {
+		requested := make([]string, len(kinds))
+		for i, kind := range kinds {
+			requested[i] = string(kind)
+		}
+		rows, err := s.Index.EligibleMemoryRows(scope.ProjectKey, requested, false, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := rows[:0]
+		for _, row := range rows {
+			if memoryRowEligible(scope, row, false) {
+				out = append(out, row)
+			}
+		}
+		return out, nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	wantKinds := make(map[domain.Kind]bool, len(kinds))
@@ -305,11 +386,17 @@ func (s *Store) InsertMessageEvidence(ctx context.Context, memoryID, messageID, 
 		MemoryID: memoryID, MessageID: messageID, QuoteHash: quoteHash,
 		QuoteStart: start, QuoteEnd: end, Relation: relation, CreatedAt: time.Now().UTC(),
 	}
-	if msg, ok := s.messages[messageID]; ok {
-		row.MessageContent = msg.Content
-		row.OccurredAt = msg.OccurredAt
+	if !s.lowRAM {
+		s.evidence[memoryID] = append(s.evidence[memoryID], row)
 	}
-	s.evidence[memoryID] = append(s.evidence[memoryID], row)
+	if s.Index != nil {
+		if err := s.Index.UpsertEvidence(row); err != nil {
+			return err
+		}
+	}
+	if s.lowRAM {
+		return s.flushEvidenceFromIndexLocked()
+	}
 	return s.flushEvidenceLocked()
 }
 
@@ -339,6 +426,9 @@ func (s *Store) flushEvidenceLocked() error {
 }
 
 func (s *Store) MessageEvidenceFor(ctx context.Context, memoryID string) ([]MessageEvidenceRow, error) {
+	if s.Index != nil {
+		return s.Index.EvidenceFor(memoryID)
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows := append([]MessageEvidenceRow(nil), s.evidence[memoryID]...)
@@ -469,12 +559,21 @@ func (s *Store) CurrentProjectContext(ctx context.Context, projectKey string) (*
 func (s *Store) RecordAccess(ctx context.Context, memoryID, sessionID string, kind retrieval.AccessKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row, ok := s.memories[memoryID]
+	var row MemoryRow
+	var ok bool
+	if s.lowRAM {
+		var err error
+		row, err = s.Index.LoadMemory(memoryID)
+		ok = err == nil
+	} else {
+		row, ok = s.memories[memoryID]
+	}
 	if !ok {
 		return errNoRows
 	}
 	now := time.Now().UTC()
 	row.LastAccessedAt = &now
+	projectionChanged := false
 	switch kind {
 	case retrieval.AccessRecall, retrieval.AccessReflexCore, retrieval.AccessReflexImp:
 		// Genuine use: refresh activation to full and record the use seq.
@@ -482,16 +581,24 @@ func (s *Store) RecordAccess(ctx context.Context, memoryID, sessionID string, ki
 		if seq, ok := s.sessionSeqLocked(sessionID); ok {
 			row.LastUsedSeq = seq
 		}
+		projectionChanged = true
 	case retrieval.AccessFeedback:
 		// handled by ApplyFeedback (needs outcome); leave activation alone.
 	default:
 		// search hit / candidate: diagnostic count only, no re-warm.
 	}
-	s.memories[memoryID] = row
+	if !s.lowRAM {
+		s.memories[memoryID] = row
+	}
+	if projectionChanged && s.Index != nil {
+		if err := s.Index.Upsert(row); err != nil {
+			return err
+		}
+	}
 	// Access bumps are batched: a search returning N hits must not rewrite
-	// the whole 1MB+ memories file N times, nor re-write the SQLite index
-	// (which does not even store these counters). The bump is applied to
-	// AccessCount at flush time (FlushAccessBumps) so in-memory counts and
+	// the whole 1MB+ memories file N times, nor rewrite the SQLite read row.
+	// The bump is applied to AccessCount at flush time (FlushAccessBumps) so
+	// in-memory counts and
 	// the canonical file stay in sync exactly once per batch. A crash loses
 	// only diagnostic counts, never authored memory content.
 	s.accessBumps[memoryID]++
@@ -506,7 +613,15 @@ func (s *Store) RecordAccess(ctx context.Context, memoryID, sessionID string, ki
 func (s *Store) ApplyFeedback(ctx context.Context, memoryID, sessionID string, outcome string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row, ok := s.memories[memoryID]
+	var row MemoryRow
+	var ok bool
+	if s.lowRAM {
+		var err error
+		row, err = s.Index.LoadMemory(memoryID)
+		ok = err == nil
+	} else {
+		row, ok = s.memories[memoryID]
+	}
 	if !ok {
 		return errNoRows
 	}
@@ -530,14 +645,17 @@ func (s *Store) ApplyFeedback(ctx context.Context, memoryID, sessionID string, o
 		}
 		row.Disputed = true
 	}
-	s.memories[memoryID] = row
-	// Access bumps are batched: a search returning N hits must not rewrite
-	// the whole 1MB+ memories file N times, nor re-write the SQLite index
-	// (which does not even store these counters). The bump is applied to
-	// AccessCount at flush time (FlushAccessBumps) so in-memory counts and
-	// the canonical file stay in sync exactly once per batch. A crash loses
-	// only diagnostic counts, never authored memory content.
-	s.accessBumps[memoryID]++
+	if !s.lowRAM {
+		s.memories[memoryID] = row
+	}
+	if s.Index != nil {
+		if err := s.Index.Upsert(row); err != nil {
+			return err
+		}
+	}
+	// Feedback already increments AccessCount and refreshes the SQLite row;
+	// do not also enqueue a diagnostic search bump or it would be counted
+	// twice at the next checkpoint.
 	return nil
 }
 

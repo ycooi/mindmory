@@ -93,6 +93,52 @@ type Store struct {
 	lastMessageHash     string
 	messageSegment      int
 	startupRecoveries   []OpsEvent
+	lowRAM              bool // experimental: complete payloads live in SQLite, not Go maps
+}
+
+// EnableLowRAMExperiment releases the three archive-sized Go maps after the
+// complete SQLite read projection has been verified. Small governance maps
+// remain resident. Call only after imports and one-shot maintenance commands.
+func (s *Store) EnableLowRAMExperiment() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Index == nil {
+		return fmt.Errorf("SQLite read projection unavailable")
+	}
+	if _, err := s.Index.Counts(); err != nil {
+		return fmt.Errorf("verify SQLite read projection: %w", err)
+	}
+	s.memories = nil
+	s.messages = nil
+	s.evidence = nil
+	s.lowRAM = true
+	return nil
+}
+
+func (s *Store) LowRAMEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lowRAM
+}
+
+func (s *Store) allMemoryRowsLocked() ([]MemoryRow, error) {
+	if s.lowRAM {
+		return s.Index.AllMemories()
+	}
+	rows := make([]MemoryRow, 0, len(s.memories))
+	for _, row := range s.memories {
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func (s *Store) memoryRowLocked(id string) (MemoryRow, bool) {
+	if s.lowRAM {
+		row, err := s.Index.LoadMemory(id)
+		return row, err == nil
+	}
+	row, ok := s.memories[id]
+	return row, ok
 }
 
 // ContinuityRow is a stored continuity revision.
@@ -220,7 +266,13 @@ func (s *Store) SyncVectors(ctx context.Context, embedder Embedder, _ VectorSync
 		id, inputHash, text string
 	}
 	var queue []pending
-	for id, row := range s.memories {
+	allRows, err := s.allMemoryRowsLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return summary, err
+	}
+	for _, row := range allRows {
+		id := row.MemoryID
 		summary.Scanned++
 		if row.Lifecycle != "ACTIVE" || row.Sensitivity != "NORMAL" || row.SecretLike || row.InstructionLike {
 			summary.SkippedInactive++
@@ -270,7 +322,7 @@ func (s *Store) SyncVectors(ctx context.Context, embedder Embedder, _ VectorSync
 		}
 		refs := make([]vectorstore.Ref, 0, len(queue))
 		for i, p := range queue {
-			row, ok := s.memories[p.id]
+			row, ok := s.memoryRowLocked(p.id)
 			if !ok || row.Lifecycle != "ACTIVE" || EmbeddingInputHash(row) != p.inputHash {
 				_ = building.Close()
 				return summary, fmt.Errorf("canonical memory changed during vector generation build; retry sync")
@@ -301,7 +353,7 @@ func (s *Store) SyncVectors(ctx context.Context, embedder Embedder, _ VectorSync
 		return summary, nil
 	}
 	for i, p := range queue {
-		row, ok := s.memories[p.id]
+		row, ok := s.memoryRowLocked(p.id)
 		if !ok || row.Lifecycle != "ACTIVE" || EmbeddingInputHash(row) != p.inputHash {
 			summary.Failed++
 			continue
@@ -357,6 +409,24 @@ func (s *Store) openIndex() error {
 	if stored != current {
 		if err := idx.RebuildFrom(rows); err != nil {
 			return fmt.Errorf("index rebuild: %w", err)
+		}
+	}
+	messages := make([]MessageRow, 0, len(s.messages))
+	for _, row := range s.messages {
+		messages = append(messages, row)
+	}
+	sort.Slice(messages, func(i, j int) bool { return messages[i].MessageSeq < messages[j].MessageSeq })
+	var evidence []MessageEvidenceRow
+	for _, rows := range s.evidence {
+		evidence = append(evidence, rows...)
+	}
+	supportStored, err := idx.storedSupportFingerprint()
+	if err != nil {
+		return err
+	}
+	if supportStored != SupportFingerprint(messages, evidence) {
+		if err := idx.ReplaceReadSupport(messages, evidence); err != nil {
+			return fmt.Errorf("supporting read projection rebuild: %w", err)
 		}
 	}
 	return nil
@@ -427,9 +497,9 @@ func (s *Store) importLegacyVectorProjection() error {
 func (s *Store) RebuildIndex() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows := make([]MemoryRow, 0, len(s.memories))
-	for _, row := range s.memories {
-		rows = append(rows, row)
+	rows, err := s.allMemoryRowsLocked()
+	if err != nil {
+		return err
 	}
 	return s.Index.RebuildFrom(rows)
 }
@@ -453,6 +523,14 @@ func (s *Store) FlushAll() error {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Persist while the SQLite projection is still open; low-RAM mode uses it
+	// to materialize compatibility JSONL files for snapshots and restart.
+	var flushErr error
+	if err := s.flushAccessBumpsLocked(); err != nil {
+		flushErr = err
+	} else {
+		flushErr = s.flushAllLocked()
+	}
 	if s.VectorStore != nil {
 		_ = s.VectorStore.Close()
 	}
@@ -462,17 +540,11 @@ func (s *Store) Close() error {
 	if s.Ops != nil {
 		_ = s.Ops.Close()
 	}
-	// Persist any pending access bumps before the final full flush, so the
-	// canonical file carries the latest counts at shutdown.
-	if err := s.flushAccessBumpsLocked(); err != nil {
-		return err
-	}
-	err := s.flushAllLocked()
 	if s.lockFile != nil {
 		_ = syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
 		_ = s.lockFile.Close()
 	}
-	return err
+	return flushErr
 }
 
 // acquireDirLock takes an exclusive advisory lock on a .lock file inside the
@@ -802,10 +874,11 @@ func (s *Store) loadEvidence() error {
 		}
 		// Hydrate quote text + occurrence from the archived message so recall
 		// can render evidence without a join.
-		if message, ok := s.messages[row.MessageID]; ok {
-			row.MessageContent = message.Content
-			row.OccurredAt = message.OccurredAt
-		}
+		// Message content is hydrated by the SQLite evidence/message join on
+		// demand. Keeping it here duplicates every cited message in RAM and in
+		// evidence.jsonl.
+		row.MessageContent = ""
+		row.OccurredAt = time.Time{}
 		s.evidence[row.MemoryID] = append(s.evidence[row.MemoryID], row)
 	}
 	return nil
@@ -832,11 +905,20 @@ func (s *Store) flushAllLocked() error {
 	if err := s.flushKindLocked("sessions", s.sessionsJSONL()); err != nil {
 		return err
 	}
-	if err := s.flushKindLocked("messages", s.messagesJSONL()); err != nil {
-		return err
-	}
-	if err := s.flushKindLocked("memories", s.memoriesJSONL()); err != nil {
-		return err
+	if s.lowRAM {
+		if err := s.flushMessagesFromIndexLocked(); err != nil {
+			return err
+		}
+		if err := s.flushMemoriesFromIndexLocked(); err != nil {
+			return err
+		}
+	} else {
+		if err := s.flushKindLocked("messages", s.messagesJSONL()); err != nil {
+			return err
+		}
+		if err := s.flushKindLocked("memories", s.memoriesJSONL()); err != nil {
+			return err
+		}
 	}
 	if err := s.flushKindLocked("proposals", s.proposalsJSONL()); err != nil {
 		return err
@@ -844,10 +926,58 @@ func (s *Store) flushAllLocked() error {
 	if err := s.flushKindLocked("continuity", s.continuityJSONL()); err != nil {
 		return err
 	}
-	if err := s.flushEvidenceLocked(); err != nil {
+	if s.lowRAM {
+		if err := s.flushEvidenceFromIndexLocked(); err != nil {
+			return err
+		}
+	} else if err := s.flushEvidenceLocked(); err != nil {
 		return err
 	}
 	return s.flushKindLocked("project_context", s.projectContextJSONL())
+}
+
+func (s *Store) flushMemoriesFromIndexLocked() error {
+	rows, err := s.Index.AllMemories()
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, row := range rows {
+		line, _ := json.Marshal(row)
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	return s.flushKindLocked("memories", buf.Bytes())
+}
+
+func (s *Store) flushMessagesFromIndexLocked() error {
+	rows, err := s.Index.AllMessages()
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, row := range rows {
+		line, _ := json.Marshal(row)
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	return s.flushKindLocked("messages", buf.Bytes())
+}
+
+func (s *Store) flushEvidenceFromIndexLocked() error {
+	rows, err := s.Index.AllEvidence()
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, row := range rows {
+		row.MessageContent = ""
+		row.OccurredAt = time.Time{}
+		line, _ := json.Marshal(row)
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	return s.flushKindLocked("evidence", buf.Bytes())
 }
 
 func (s *Store) flushKindLocked(kind string, lines []byte) error {
@@ -1106,8 +1236,8 @@ type MessageEvidenceRow struct {
 	QuoteEnd       int       `json:"quote_end_byte"`
 	Relation       string    `json:"relation"`
 	CreatedAt      time.Time `json:"created_at"`
-	MessageContent string    `json:"message_content,omitempty"` // hydrated at load
-	OccurredAt     time.Time `json:"occurred_at,omitempty"`     // hydrated at load
+	MessageContent string    `json:"message_content,omitempty"` // hydrated by SQLite join on read
+	OccurredAt     time.Time `json:"occurred_at,omitempty"`     // hydrated by SQLite join on read
 }
 
 // ProjectContextRow is a stored project context revision.
