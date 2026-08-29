@@ -3,6 +3,25 @@
 All notable changes to Mindmory are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-08-29
+
+### Fixed
+
+- Codex and Claude Code integrations now archive the completed assistant
+  response through their `Stop` lifecycle hook, in addition to the existing
+  exact user-prompt checkpoint.
+- Assistant archive records preserve role, host identity, content, turn order,
+  canonical message-journal integrity, and the complete SQLite projection.
+- Hook retries with the same external event no longer conflict solely because
+  their client-supplied occurrence timestamp changed.
+
+### Added
+
+- Role-aware generic checkpoint adapter support for `UserPromptSubmit` and
+  `Stop` events.
+- Regression coverage for assistant persistence, restart, low-RAM mode,
+  idempotency, and release hook templates.
+
 ## [0.1.1] - 2026-08-29
 
 ### Added

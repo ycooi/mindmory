@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -34,6 +36,56 @@ func TestCheckpointHookArchivesHostPromptWithoutWritingResponse(t *testing.T) {
 	message := got.Messages[0]
 	if message.Role != "user" || message.Content != "remember this" || !strings.HasPrefix(message.ExternalMessageID, "codex-") {
 		t.Fatalf("unexpected message: %#v", message)
+	}
+}
+
+func TestCheckpointHookArchivesAssistantStopWithIdentity(t *testing.T) {
+	var received []hookCheckpointRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got hookCheckpointRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		received = append(received, got)
+		_, _ = io.WriteString(w, `{"session_id":"s1"}`)
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	transcript := filepath.Join(t.TempDir(), "conversation.jsonl")
+	if err := os.WriteFile(transcript, []byte("completed turn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(map[string]any{
+		"session_id": "chat-1", "hook_event_name": "Stop", "transcript_path": transcript,
+		"last_assistant_message": "I completed the requested refactor.", "cwd": "/project",
+	})
+	if code := runCheckpointHook([]string{"--host", "claude-code"}, bytes.NewReader(input)); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if code := runCheckpointHook([]string{"--host", "claude-code"}, bytes.NewReader(input)); code != 0 {
+		t.Fatalf("retry code=%d", code)
+	}
+	if len(received) != 2 || len(received[0].Messages) != 1 {
+		t.Fatalf("unexpected checkpoints: %#v", received)
+	}
+	message := received[0].Messages[0]
+	if message.Role != "assistant" || message.Content != "I completed the requested refactor." ||
+		message.AssistantID != "claude-code" || message.AssistantName != "Claude Code" ||
+		!strings.HasPrefix(message.ExternalMessageID, "claude-code-assistant-") {
+		t.Fatalf("unexpected assistant message: %#v", message)
+	}
+	if retryID := received[1].Messages[0].ExternalMessageID; retryID != message.ExternalMessageID {
+		t.Fatalf("same transcript position was not idempotent: %s != %s", retryID, message.ExternalMessageID)
+	}
+	if err := os.WriteFile(transcript, []byte("completed turn\nnext completed turn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runCheckpointHook([]string{"--host", "claude-code"}, bytes.NewReader(input)); code != 0 {
+		t.Fatalf("next turn code=%d", code)
+	}
+	if nextID := received[2].Messages[0].ExternalMessageID; nextID == message.ExternalMessageID {
+		t.Fatalf("identical assistant text in a later transcript position collapsed: %s", nextID)
 	}
 }
 

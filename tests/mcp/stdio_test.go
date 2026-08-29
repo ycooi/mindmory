@@ -159,3 +159,33 @@ func TestUnconfiguredStdioStartsRestrictedBootstrapServer(t *testing.T) {
 		t.Fatalf("bootstrap leaked credential field: %s", text)
 	}
 }
+
+func TestReleaseHookTemplatesCaptureUserAndAssistantRoles(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	for _, relative := range []string{
+		"packaging/integrations/codex/hooks.json.example",
+		"packaging/integrations/claude-code/settings.json.example",
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document struct {
+			Hooks map[string][]struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"hooks"`
+		}
+		if err := json.Unmarshal(raw, &document); err != nil {
+			t.Fatalf("%s: %v", relative, err)
+		}
+		for _, event := range []string{"UserPromptSubmit", "Stop"} {
+			groups := document.Hooks[event]
+			if len(groups) != 1 || len(groups[0].Hooks) != 1 || !strings.Contains(groups[0].Hooks[0].Command, "checkpoint-hook.sh") {
+				t.Fatalf("%s missing %s checkpoint command: %+v", relative, event, document.Hooks)
+			}
+		}
+	}
+}

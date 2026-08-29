@@ -54,8 +54,9 @@ When `state` is `READY`:
 5. Report success only when its state is `READY` and the normal memory tools
    are present.
 6. Read `integrations/README.md` and, with user approval, install the matching
-   host lifecycle hook. The Codex and Claude Code packages checkpoint the
-   exact current prompt needed for evidence-backed mutations.
+   host lifecycle hooks. The Codex and Claude Code packages checkpoint the
+   exact current prompt needed for evidence-backed mutations and the completed
+   assistant response needed for full conversation history.
 
 When `state` is `ACTION_REQUIRED`, do not claim installation succeeded.
 Report the setup diagnostics from stderr without including secret file

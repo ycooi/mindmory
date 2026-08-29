@@ -38,7 +38,7 @@ DeepSeek Harness, and generic stdio clients.
 | `bin/` | The three prebuilt server binaries; source is available in the public repository. |
 | `AGENT_INSTALL.md` | Authoritative agent installation and result-handling contract |
 | `setup.sh` | Idempotent initialization — generates or reuses protected configuration, starts the daemon, and reports status |
-| `integrations/` | Codex, Claude Code, and generic MCP configuration plus automatic prompt checkpoint adapters |
+| `integrations/` | Codex, Claude Code, and generic MCP configuration plus automatic user/assistant checkpoint adapters |
 | `dsh/` | DeepSeek Harness wiring: `cordis.patch.example.yml` template + `README.md` guide |
 | `README.md`, `LICENSE`, `NOTICE.md` | This guide, the complete MIT license, and attribution |
 | `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.txt` | Complete compiled dependency inventory and upstream license texts |

@@ -1,5 +1,5 @@
 {
-  "description": "Checkpoint each Codex user prompt into local Mindmory",
+  "description": "Checkpoint each Codex user prompt and completed assistant response into local Mindmory",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -9,6 +9,18 @@
             "command": "/ABSOLUTE/PATH/integrations/checkpoint-hook.sh codex",
             "timeout": 10,
             "statusMessage": "Checkpointing prompt to local Mindmory"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/integrations/checkpoint-hook.sh codex",
+            "timeout": 10,
+            "statusMessage": "Checkpointing assistant response to local Mindmory"
           }
         ]
       }

@@ -11,6 +11,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/integrations/checkpoint-hook.sh claude-code",
+            "timeout": 10,
+            "statusMessage": "Checkpointing assistant response to local Mindmory"
+          }
+        ]
+      }
     ]
   }
 }

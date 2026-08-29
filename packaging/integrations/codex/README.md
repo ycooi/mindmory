@@ -1,8 +1,9 @@
 # Codex integration
 
 This package supports local Codex clients: ChatGPT desktop, Codex CLI, and the
-Codex IDE extension. It registers Mindmory as a local stdio MCP server and
-checkpoints each submitted user prompt before Codex processes it.
+Codex IDE extension. It registers Mindmory as a local stdio MCP server,
+checkpoints each submitted user prompt, and archives Codex's completed response
+when the turn stops.
 
 ## Agent installation
 
@@ -26,6 +27,10 @@ checkpoints each submitted user prompt before Codex processes it.
 4. Merge `hooks.json.example` into the matching Codex `hooks.json`, replacing
    `/ABSOLUTE/PATH`. Do not overwrite unrelated hooks.
 
+   Upgrades from Mindmory `v0.1.1` must add the new `Stop` block as well as
+   retaining `UserPromptSubmit`; replacing binaries alone cannot modify the
+   user's Codex hook configuration.
+
 5. Restart the Codex client. Use `/mcp` or `codex mcp list`, then call
    `mindmory_status`. Installation succeeds only when its state is `READY`.
 
@@ -35,6 +40,8 @@ checkpoints each submitted user prompt before Codex processes it.
   `memory_context` near the start of a conversation.
 - The `UserPromptSubmit` hook sends the exact prompt directly to the local
   daemon. It emits no successful output into model context.
+- The `Stop` hook sends `last_assistant_message` as an assistant-role archive
+  record with Codex identity. It does not block or continue the agent.
 - If checkpointing fails, the hook reports a generic error without printing
   the prompt or credential. `mindmory_status` remains the authoritative
   diagnostic surface.

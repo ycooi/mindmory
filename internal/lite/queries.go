@@ -81,7 +81,7 @@ func (s *Store) InsertMessage(ctx context.Context, sessionID string, m checkpoin
 	if s.Index != nil {
 		if row, err := s.Index.MessageByExternal(sessionID, m.ExternalMessageID); err == nil {
 			if row.Role != string(m.Role) || row.ContentType != m.ContentType || row.Content != m.Content ||
-				row.ContentHash != m.Hash || row.AssistantID != m.AssistantID || row.AssistantName != m.AssistantName {
+				row.AssistantID != m.AssistantID || row.AssistantName != m.AssistantName {
 				return "", false, errMessageConflict
 			}
 			return row.MessageID, true, nil
@@ -91,7 +91,8 @@ func (s *Store) InsertMessage(ctx context.Context, sessionID string, m checkpoin
 	} else {
 		for id, row := range s.messages {
 			if row.SessionID == sessionID && row.ExternalMessageID == m.ExternalMessageID {
-				if row.Role != string(m.Role) || row.ContentType != m.ContentType || row.Content != m.Content || row.ContentHash != m.Hash {
+				if row.Role != string(m.Role) || row.ContentType != m.ContentType || row.Content != m.Content ||
+					row.AssistantID != m.AssistantID || row.AssistantName != m.AssistantName {
 					return "", false, errMessageConflict
 				}
 				return id, true, nil

@@ -83,10 +83,13 @@ func Run(name, version string, arguments []string) int {
 // hookInput is the common subset emitted by Codex and Claude Code for a
 // UserPromptSubmit lifecycle event. Unknown host-specific fields are ignored.
 type hookInput struct {
-	SessionID string `json:"session_id"`
-	TurnID    string `json:"turn_id"`
-	Prompt    string `json:"prompt"`
-	CWD       string `json:"cwd"`
+	SessionID            string `json:"session_id"`
+	TurnID               string `json:"turn_id"`
+	Prompt               string `json:"prompt"`
+	CWD                  string `json:"cwd"`
+	HookEventName        string `json:"hook_event_name"`
+	TranscriptPath       string `json:"transcript_path"`
+	LastAssistantMessage string `json:"last_assistant_message"`
 }
 
 type hookCheckpointRequest struct {
@@ -103,6 +106,8 @@ type hookCheckpointMessage struct {
 	ContentType       string    `json:"content_type"`
 	Content           string    `json:"content"`
 	OccurredAt        time.Time `json:"occurred_at"`
+	AssistantID       string    `json:"assistant_id,omitempty"`
+	AssistantName     string    `json:"assistant_name,omitempty"`
 }
 
 // runCheckpointHook converts a host lifecycle event on stdin into a Mindmory
@@ -116,7 +121,7 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 	}
 	var event hookInput
 	decoder := json.NewDecoder(io.LimitReader(input, 2<<20))
-	if err := decoder.Decode(&event); err != nil || strings.TrimSpace(event.Prompt) == "" {
+	if err := decoder.Decode(&event); err != nil {
 		fmt.Fprintln(os.Stderr, "Mindmory checkpoint skipped: invalid hook input")
 		return 1
 	}
@@ -129,9 +134,29 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 	if hostName == "" {
 		hostName = "generic"
 	}
-	identity := strings.Join([]string{hostName, event.SessionID, event.TurnID, event.Prompt}, "\x00")
+	eventName := strings.ToLower(strings.TrimSpace(event.HookEventName))
+	role, content := "user", strings.TrimSpace(event.Prompt)
+	assistantID, assistantName := "", ""
+	if eventName == "stop" {
+		role, content = "assistant", strings.TrimSpace(event.LastAssistantMessage)
+		assistantID, assistantName = hostName, assistantDisplayName(hostName)
+	} else if eventName != "" && eventName != "userpromptsubmit" {
+		fmt.Fprintln(os.Stderr, "Mindmory checkpoint skipped: unsupported hook event")
+		return 1
+	}
+	if content == "" || strings.TrimSpace(event.SessionID) == "" {
+		fmt.Fprintln(os.Stderr, "Mindmory checkpoint skipped: empty conversation message")
+		return 1
+	}
+	sequenceMarker := strings.TrimSpace(event.TurnID)
+	if sequenceMarker == "" && strings.TrimSpace(event.TranscriptPath) != "" {
+		if info, statErr := os.Stat(event.TranscriptPath); statErr == nil {
+			sequenceMarker = fmt.Sprintf("%s:%d:%d", event.TranscriptPath, info.Size(), info.ModTime().UnixNano())
+		}
+	}
+	identity := strings.Join([]string{hostName, event.SessionID, sequenceMarker, role, content}, "\x00")
 	digest := sha256.Sum256([]byte(identity))
-	externalMessageID := fmt.Sprintf("%s-%x", hostName, digest[:16])
+	externalMessageID := fmt.Sprintf("%s-%s-%x", hostName, role, digest[:16])
 	payload, err := json.Marshal(hookCheckpointRequest{
 		// setup.sh creates and binds this stable continuity session. Every host
 		// writes to it, so the stdio bridge can resolve the latest user message.
@@ -140,10 +165,12 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 		Mode:              "INCREMENTAL",
 		Messages: []hookCheckpointMessage{{
 			ExternalMessageID: externalMessageID,
-			Role:              "user",
+			Role:              role,
 			ContentType:       "text/plain",
-			Content:           event.Prompt,
+			Content:           content,
 			OccurredAt:        time.Now().UTC(),
+			AssistantID:       assistantID,
+			AssistantName:     assistantName,
 		}},
 		ToolEvents: []any{},
 	})
@@ -168,6 +195,17 @@ func runCheckpointHook(arguments []string, input io.Reader) int {
 		return 1
 	}
 	return 0
+}
+
+func assistantDisplayName(hostName string) string {
+	switch hostName {
+	case "codex":
+		return "Codex"
+	case "claude-code":
+		return "Claude Code"
+	default:
+		return hostName
+	}
 }
 
 func send(request *http.Request, timeout time.Duration) int {

@@ -552,11 +552,61 @@ func TestCheckpointReplayIdempotent(t *testing.T) {
 	if err != nil || !replay2 || id1 != id2 {
 		t.Fatalf("replay must return same id: %v %v %s vs %s", err, replay2, id1, id2)
 	}
+	retriedLater := msg
+	retriedLater.OccurredAt = now.Add(time.Minute)
+	retriedLater.Hash = checkpointMessageHash(retriedLater)
+	if id, replay, err := store.InsertMessage(ctx, session.SessionID, retriedLater); err != nil || !replay || id != id1 {
+		t.Fatalf("same external message with retry timestamp must replay: id=%s err=%v replay=%v", id, err, replay)
+	}
 	changed := msg
 	changed.Content = "different content"
 	changed.Hash = tupleHash("user", "text/plain", changed.Content, archive.FormatCanonicalTimestamp(changed.OccurredAt))
 	if _, replay, err := store.InsertMessage(ctx, session.SessionID, changed); !errors.Is(err, errMessageConflict) || replay {
 		t.Fatalf("changed replay accepted: err=%v replay=%v", err, replay)
+	}
+}
+
+func TestAssistantMessagePersistsInSQLiteAndCanonicalJournal(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	session, err := store.UpsertSession(ctx, testPrincipal(), "assistant-session", "", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := checkpointMessage{ExternalMessageID: "assistant-1", Role: archive.RoleAssistant,
+		ContentType: "text/plain", Content: "The assistant completed the migration.", OccurredAt: time.Now().UTC(),
+		AssistantID: "codex", AssistantName: "Codex"}
+	message.Hash = checkpointMessageHash(message)
+	messageID, replay, err := store.InsertMessage(ctx, session.SessionID, message)
+	if err != nil || replay {
+		t.Fatalf("insert assistant: id=%s replay=%v err=%v", messageID, replay, err)
+	}
+	if err := store.EnableLowRAMExperiment(); err != nil {
+		t.Fatal(err)
+	}
+	projected, err := store.Index.LoadMessage(messageID)
+	if err != nil || projected.Role != "assistant" || projected.AssistantID != "codex" || projected.AssistantName != "Codex" {
+		t.Fatalf("assistant projection: %+v err=%v", projected, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	archived, err := reopened.Index.LoadMessage(messageID)
+	if err != nil || archived.Content != message.Content || archived.Role != "assistant" || archived.AssistantID != "codex" {
+		t.Fatalf("assistant restart: %+v err=%v", archived, err)
+	}
+	journal, err := os.ReadFile(filepath.Join(dir, "messages", "messages-000001.jsonl"))
+	if err != nil || !bytes.Contains(journal, []byte(`"role":"assistant"`)) || !bytes.Contains(journal, []byte(`"assistant_id":"codex"`)) {
+		t.Fatalf("assistant canonical journal missing: err=%v journal=%s", err, journal)
 	}
 }
 

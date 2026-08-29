@@ -1,6 +1,8 @@
 #!/bin/sh
-# Shared UserPromptSubmit adapter for Codex and Claude Code.
-# Host event JSON is read from stdin. No prompt or credential is printed.
+# Shared UserPromptSubmit/Stop adapter for Codex and Claude Code.
+# Host event JSON is read from stdin. No conversation content or credential is
+# printed. UserPromptSubmit archives role=user; Stop archives the completed
+# last_assistant_message with the host identity.
 set -eu
 
 HOST_NAME="${1:-generic}"

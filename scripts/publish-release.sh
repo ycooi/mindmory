@@ -11,7 +11,7 @@
 #
 # Usage:
 #   sh scripts/publish-release.sh                # tag from packaging/VERSION
-#   sh scripts/publish-release.sh --tag v0.1.1
+#   sh scripts/publish-release.sh --tag v0.1.2
 #   sh scripts/publish-release.sh --repo yourname/mindmory-mcp
 #   sh scripts/publish-release.sh --draft        # create as draft first
 #   sh scripts/publish-release.sh --clobber      # replace an existing tag
@@ -68,14 +68,16 @@ Prebuilt binaries for the MIT-licensed Mindmory source repository. Runs entirely
 on your own machine: no Docker, no PostgreSQL, no telemetry, no cloud. Your memories live
 in \`var/data/\` as human-readable JSONL.
 
-### What changed in v0.1.1
+### What changed in $TAG
 
-- SQLite now serves complete memory, message, and evidence records while JSONL
-  remains the canonical, portable recovery source.
-- Search candidate hydration and evidence retrieval stay inside SQLite instead
-  of scanning or reopening the canonical archive.
-- Optional \`MINDMORY_LOW_RAM_EXPERIMENT=1\` mode reduces steady-state Go heap
-  by releasing archive-sized in-process maps after startup.
+- Codex and Claude Code integrations now checkpoint both the exact user prompt
+  and the completed assistant response.
+- Assistant replies retain their role and host identity in canonical JSONL and
+  the complete SQLite read projection.
+- Hook retries remain idempotent even when their invocation timestamp changes.
+- Existing v0.1.1 installations must merge the new \`Stop\` hook from the
+  bundled Codex or Claude Code template; upgrading the binary alone does not
+  edit host configuration.
 
 ### Platforms
 

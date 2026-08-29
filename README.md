@@ -74,7 +74,7 @@ embeddings. It requires no Docker, PostgreSQL, hosted vector database, or local
 LLM. The result is a memory service that can be inspected, backed up, moved,
 repaired, and understood by the person who owns it.
 
-Current release: **0.1.1** (2026-08-29)<br>
+Current release: **0.1.2** (2026-08-29)<br>
 Author: **OOI YC** · Organization: **KELE Research**
 
 ## What ships
@@ -203,8 +203,9 @@ through MCP.
 
 Release archives also include `integrations/codex/`,
 `integrations/claude-code/`, and `integrations/generic/`. Codex and Claude Code
-packages include a `UserPromptSubmit` checkpoint hook so evidence-backed
-remember, correct, and forget operations can bind to the exact current prompt.
+packages include `UserPromptSubmit` and `Stop` checkpoint hooks. The former
+binds evidence-backed mutations to the exact current prompt; the latter stores
+the completed assistant response so conversation history includes both roles.
 
 ## Documentation and project policy
 
