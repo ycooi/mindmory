@@ -42,6 +42,29 @@ possible, and the model never becomes the authority.
 > **The model may propose a memory. The memory system decides whether it may be
 > stored, retrieved, or trusted.**
 
+## Designed for a lifetime
+
+Human–machine memory should outlive any one assistant, model, vendor, database,
+or generation of hardware. AI is making technology evolve faster, not slower;
+the systems that create and retrieve memories will change many times during a
+person's life. The memory record itself should not inherit the short lifespan
+of the technology currently operating on it.
+
+After considering richer databases and more specialized storage formats,
+Mindmory chose JSONL as its canonical record. The choice is deliberately
+simple: each line is a self-contained JSON object that a person can open and
+inspect with an ordinary text editor, while machines can parse, stream, hash,
+copy, validate, and migrate it with tools available in virtually every
+programming language. It does not require a particular database server,
+application, embedding model, or cloud provider to remain intelligible.
+
+SQLite indexes, vectors, and future retrieval technologies are useful, but
+they are disposable projections. They can be rebuilt or replaced as better
+technology arrives. The JSONL record remains the portable source of truth.
+
+> **Simplicity is a preservation strategy.** A lifetime memory should be easy
+> to understand today, recover decades from now, and carry anywhere in between.
+
 ## How it works
 
 ```mermaid
