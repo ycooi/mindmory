@@ -260,6 +260,12 @@ type VectorSyncSummary struct {
 // memory JSONL and is safe to repeat after interruption.
 func (s *Store) SyncVectors(ctx context.Context, embedder Embedder, _ VectorSyncOptions) (VectorSyncSummary, error) {
 	var summary VectorSyncSummary
+	if embedder == nil {
+		return summary, fmt.Errorf("embedding provider unavailable")
+	}
+	if err := embedder.ProviderContract().Validate(); err != nil {
+		return summary, fmt.Errorf("embedding provider contract: %w", err)
+	}
 	model, digest := embeddingModelName(embedder), embeddingModelDigest(embedder)
 	s.mu.Lock()
 	type pending struct {

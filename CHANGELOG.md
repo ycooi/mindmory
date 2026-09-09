@@ -3,6 +3,43 @@
 All notable changes to Mindmory are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-09
+
+### Added
+
+- Native Porter-tokenized FTS5 and BM25 retrieval alongside the existing
+  trigram/CJK projection.
+- Reproducible short, medium, long, and superlong synthetic scale evaluation,
+  plus support for the public coding-agent-life-v1 fixture format.
+- `mindmoryctl providers certify [--probe]` for validating retrieval-provider
+  authority, disclosure behavior, identity, determinism, and dimensions.
+
+### Changed
+
+- Lexical search now uses identifier-aware ranking, bounded candidate
+  hydration, stable tie-breaking, and safe fallback for ordinal anchors.
+- MCP search responses omit duplicate snippets when compact content is
+  available, reducing retrieval-context token use.
+- SQLite uses a bounded WAL connection pool and a resource-controlled,
+  set-based index reconstruction path. The replacement commits atomically,
+  and concurrent searches continue against the prior index generation.
+- DeepSeek Harness checkpoint relay tests use deadline-based readiness and
+  shutdown handling for more reliable slow-host execution.
+
+### Fixed
+
+- Healthy hard-negative queries no longer fall back to scanning the canonical
+  archive.
+- BM25 ordering and score saturation now preserve useful relevance separation.
+- Embedding providers fail closed before canonical-derived text is submitted
+  when their authority or disclosure contract is invalid.
+
+### Security
+
+- Retrieval providers now declare whether they are local or remote and whether
+  content is disclosed, while canonical storage authority remains exclusively
+  with Mindmory.
+
 ## [0.1.2] - 2026-08-29
 
 ### Fixed

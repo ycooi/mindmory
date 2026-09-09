@@ -17,7 +17,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ import (
 // Embedder embeds text into vectors via a configured provider.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	ProviderContract() RetrievalProviderContract
 }
 
 func embeddingModelName(embedder Embedder) string {
@@ -40,6 +43,18 @@ func embeddingModelDigest(embedder Embedder) string {
 		return identified.ModelDigest()
 	}
 	return ""
+}
+
+func retrievalProviderLocality(endpoint string) (locality string, sendsContentOffDevice bool) {
+	parsed, err := url.Parse(endpoint)
+	if err == nil {
+		host := parsed.Hostname()
+		ip := net.ParseIP(host)
+		if strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback()) {
+			return "local", false
+		}
+	}
+	return "remote", true
 }
 
 // OllamaEmbedder calls the local Ollama embedding API.
@@ -68,6 +83,15 @@ func (o *OllamaEmbedder) ModelName() string {
 }
 
 func (o *OllamaEmbedder) ModelDigest() string { return strings.TrimSpace(o.Digest) }
+
+func (o *OllamaEmbedder) ProviderContract() RetrievalProviderContract {
+	locality, sendsContentOffDevice := retrievalProviderLocality(o.EndpointURL())
+	return RetrievalProviderContract{
+		ContractVersion: RetrievalProviderContractVersion, Provider: "ollama", Surface: "embedding", Locality: locality,
+		ModelName: o.ModelName(), ModelDigest: o.ModelDigest(), Dimensions: o.Dimensions,
+		SupportsSemantic: true, SupportsBatch: true, MaximumBatchSize: 16, SendsContentOffDevice: sendsContentOffDevice,
+	}
+}
 
 type ollamaEmbedRequest struct {
 	Model      string   `json:"model"`
@@ -143,6 +167,15 @@ type OpenAICompatibleEmbedder struct {
 func (o *OpenAICompatibleEmbedder) ModelName() string   { return o.Model }
 func (o *OpenAICompatibleEmbedder) ModelDigest() string { return o.Digest }
 
+func (o *OpenAICompatibleEmbedder) ProviderContract() RetrievalProviderContract {
+	locality, sendsContentOffDevice := retrievalProviderLocality(o.Endpoint)
+	return RetrievalProviderContract{
+		ContractVersion: RetrievalProviderContractVersion, Provider: "openai-compatible", Surface: "embedding", Locality: locality,
+		ModelName: o.ModelName(), ModelDigest: o.ModelDigest(), Dimensions: o.Dimensions,
+		SupportsSemantic: true, SupportsBatch: true, MaximumBatchSize: 16, SendsContentOffDevice: sendsContentOffDevice,
+	}
+}
+
 type compatibleEmbedRequest struct {
 	Model          string   `json:"model"`
 	Input          []string `json:"input"`
@@ -215,14 +248,19 @@ func (o *OpenAICompatibleEmbedder) Embed(ctx context.Context, texts []string) ([
 
 func NewConfiguredEmbedder(cfg EmbeddingConfig) (Embedder, error) {
 	client := &http.Client{Timeout: cfg.Timeout}
+	var embedder Embedder
 	switch cfg.Provider {
 	case "disabled":
 		return nil, nil
 	case "ollama":
-		return &OllamaEmbedder{Endpoint: cfg.Endpoint, Path: cfg.Path, Model: cfg.Model, Digest: cfg.ModelDigest, APIKey: cfg.APIKey, Dimensions: cfg.Dimensions, Client: client}, nil
+		embedder = &OllamaEmbedder{Endpoint: cfg.Endpoint, Path: cfg.Path, Model: cfg.Model, Digest: cfg.ModelDigest, APIKey: cfg.APIKey, Dimensions: cfg.Dimensions, Client: client}
 	case "openai-compatible":
-		return &OpenAICompatibleEmbedder{Endpoint: cfg.Endpoint, Path: cfg.Path, Model: cfg.Model, Digest: cfg.ModelDigest, APIKey: cfg.APIKey, Dimensions: cfg.Dimensions, Client: client}, nil
+		embedder = &OpenAICompatibleEmbedder{Endpoint: cfg.Endpoint, Path: cfg.Path, Model: cfg.Model, Digest: cfg.ModelDigest, APIKey: cfg.APIKey, Dimensions: cfg.Dimensions, Client: client}
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q", cfg.Provider)
 	}
+	if err := embedder.ProviderContract().Validate(); err != nil {
+		return nil, fmt.Errorf("embedding provider contract: %w", err)
+	}
+	return embedder, nil
 }

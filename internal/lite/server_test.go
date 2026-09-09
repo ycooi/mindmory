@@ -71,6 +71,37 @@ func TestSemanticStrongThresholdClass(t *testing.T) {
 	}
 }
 
+func TestRetrievalOverlapIgnoresQuestionGlue(t *testing.T) {
+	target := MemoryRow{Subject: "docker build failing for arm64", Content: "missing build platform in Dockerfile"}
+	distractor := MemoryRow{Subject: "unrelated review", Content: "what was the prior answer"}
+	query := "What was the multi-arch Docker fix?"
+	targetStrength := overlapStrength(strings.ToLower(query), strings.ToLower(target.Subject+" "+target.Content))
+	distractorStrength := overlapStrength(strings.ToLower(query), strings.ToLower(distractor.Subject+" "+distractor.Content))
+	if targetStrength <= distractorStrength {
+		t.Fatalf("distinctive term did not outrank question glue: target=%v distractor=%v", targetStrength, distractorStrength)
+	}
+}
+
+func TestRetrievalOverlapNormalizesCommonEnglishInflections(t *testing.T) {
+	if got := overlapStrength("what shipped", "yeah ship it"); got != 1 {
+		t.Fatalf("shipped did not match ship: %v", got)
+	}
+	if got := overlapStrength("running tasks", "run task"); got != 1 {
+		t.Fatalf("common inflections did not normalize: %v", got)
+	}
+	if got := retrievalStem("中文"); got != "中文" {
+		t.Fatalf("non-English token changed: %q", got)
+	}
+	if got := overlapStrength("unrelated spacecraft propulsion request 501", "Repeated explicit requests strengthen a memory"); got != 0 {
+		t.Fatalf("generic request token created a false positive: %v", got)
+	}
+	for _, token := range []string{"status", "analysis", "census"} {
+		if got := retrievalStem(token); got != token {
+			t.Fatalf("non-plural suffix changed for %q: %q", token, got)
+		}
+	}
+}
+
 func governanceFixture(t *testing.T) (*Server, *Store, auth.Principal, SessionRow) {
 	t.Helper()
 	store := newTestStore(t)

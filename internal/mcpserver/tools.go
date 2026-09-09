@@ -158,7 +158,7 @@ func (r Runtime) contextSearch(ctx context.Context, _ *mcp.CallToolRequest, in S
 	if values, ok := mem["results"].([]any); ok {
 		for _, raw := range values {
 			if item, ok := raw.(map[string]any); ok {
-				hits = append(hits, map[string]any{"type": "MEMORY", "id": item["memory_id"], "title": item["subject"], "snippet": snippetText(item["content"]), "score": item["score"], "project_scope": scopeLabel(item["scope"])})
+				hits = append(hits, compactMemoryHit(item))
 			}
 		}
 	}
@@ -175,6 +175,18 @@ func (r Runtime) contextSearch(ctx context.Context, _ *mcp.CallToolRequest, in S
 	}
 	return success(map[string]any{"hits": hits})
 }
+
+func compactMemoryHit(item map[string]any) map[string]any {
+	title, _ := item["subject"].(string)
+	hit := map[string]any{"type": "MEMORY", "id": item["memory_id"], "title": title, "score": item["score"], "project_scope": scopeLabel(item["scope"])}
+	// Search is for discovery; recall returns the complete record. Avoid
+	// paying twice when a memory's subject and content are identical.
+	if snippet := snippetText(item["content"]); snippet != "" && snippet != title {
+		hit["snippet"] = snippet
+	}
+	return hit
+}
+
 func scopeLabel(value any) string {
 	if value == "GLOBAL" || value == nil || value == "" {
 		return "GLOBAL"

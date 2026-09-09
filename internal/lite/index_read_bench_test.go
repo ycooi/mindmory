@@ -42,3 +42,22 @@ func BenchmarkSQLiteSearchAndRetrieve10K(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkSQLiteRebuild50K keeps reconstruction optimization evidence
+// reproducible. Use -benchtime=1x when profiling; each iteration rebuilds both
+// lexical projections from a deterministic synthetic snapshot.
+func BenchmarkSQLiteRebuild50K(b *testing.B) {
+	index, err := OpenMemoryIndex(filepath.Join(b.TempDir(), "index.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = index.Close() })
+	rows, _ := generateScaleScenario(50_000, 50)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := index.RebuildFrom(rows); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -59,8 +59,10 @@ flowchart LR
 - **Fast without surrendering ownership.** SQLite is the complete read
   projection for search, recall, messages, and evidence. SQLite and persistent
   vector files can both be rebuilt from the canonical archive.
-- **Lexical first.** Exact names, dates, identifiers, and preferences work
-  without embeddings. Semantic search is optional when it proves useful.
+- **Lexical first.** Porter-tokenized BM25 handles natural-language matches,
+  while trigram/CJK indexing and identifier-aware ranking preserve exact
+  names, dates, codes, and preferences without embeddings. Semantic search is
+  optional when it proves useful.
 - **Correctable history.** New records supersede outdated memories without
   erasing the evidence or the history of the change.
 - **Model-independent.** The same memory can serve Codex, Claude Code, DSH, and
@@ -74,7 +76,7 @@ embeddings. It requires no Docker, PostgreSQL, hosted vector database, or local
 LLM. The result is a memory service that can be inspected, backed up, moved,
 repaired, and understood by the person who owns it.
 
-Current release: **0.1.2** (2026-08-29)<br>
+Current release: **0.2.0** (2026-09-09)<br>
 Author: **OOI YC** · Organization: **KELE Research**
 
 ## What ships
@@ -113,6 +115,18 @@ macOS and Linux on AMD64 and ARM64:
 
 ```bash
 make release
+```
+
+The source-only evaluator can also exercise synthetic short, medium, long, and
+superlong corpora with a fixed number of scored queries per size:
+
+```bash
+go run ./cmd/mindmory-eval-lite \
+  --scale \
+  --scale-sizes 240,1000,10000,50000 \
+  --scale-queries 50 \
+  --model none \
+  --output var/evaluation/scale.json
 ```
 
 ## Minimal configuration
@@ -168,6 +182,17 @@ Remote embeddings require HTTPS, `MINDMORY_EMBED_ALLOW_REMOTE=1`, an API key,
 and an explicit stable `MINDMORY_EMBED_MODEL_DIGEST`. Remote providers receive
 memory and query text, so enabling them is a deliberate privacy decision.
 
+Validate the configured provider contract before enabling semantic retrieval:
+
+```bash
+./bin/mindmoryctl providers certify
+./bin/mindmoryctl providers certify --probe
+```
+
+The optional probe submits only fixed synthetic strings. It checks provider
+identity, dimensions, determinism, and basic separation without reading the
+canonical memory archive.
+
 When provider, model, digest, dimensions, or embedding format changes, startup
 detects the mismatch, disables semantic retrieval, and reports an actionable
 incident through logs and MCP. Canonical memory remains usable. Follow the
@@ -184,6 +209,12 @@ The new generation is built separately and becomes current only after full
 verification; a failed rebuild leaves the prior generation intact. Keep
 `MINDMORY_SEMANTIC_SEARCH=0` unless evaluation with real queries shows a
 measurable quality benefit.
+
+The derived SQLite search index follows the same continuity principle during
+schema reconstruction: a bounded background writer builds the replacement,
+WAL readers continue using the current generation, and the verified index is
+committed atomically. Once committed, new searches use it immediately; the
+daemon does not need another restart just to activate the rebuilt index.
 
 ## MCP setup
 

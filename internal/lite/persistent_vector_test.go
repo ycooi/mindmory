@@ -21,6 +21,9 @@ type countingEmbedder struct {
 
 func (e *countingEmbedder) ModelName() string   { return e.model }
 func (e *countingEmbedder) ModelDigest() string { return e.digest }
+func (e *countingEmbedder) ProviderContract() RetrievalProviderContract {
+	return RetrievalProviderContract{ContractVersion: RetrievalProviderContractVersion, Provider: "test", Surface: "embedding", Locality: "local", ModelName: e.model, ModelDigest: e.digest, SupportsSemantic: true, SupportsBatch: true, MaximumBatchSize: 16}
+}
 func (e *countingEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	e.calls++
 	e.inputs += len(texts)

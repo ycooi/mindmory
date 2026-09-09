@@ -11,7 +11,7 @@
 #
 # Usage:
 #   sh scripts/publish-release.sh                # tag from packaging/VERSION
-#   sh scripts/publish-release.sh --tag v0.1.2
+#   sh scripts/publish-release.sh --tag v0.2.0
 #   sh scripts/publish-release.sh --repo yourname/mindmory-mcp
 #   sh scripts/publish-release.sh --draft        # create as draft first
 #   sh scripts/publish-release.sh --clobber      # replace an existing tag
@@ -64,24 +64,43 @@ notes() {
   cat <<EOF
 ## Mindmory MCP — local-first, evidence-backed memory for your AI assistant
 
-Prebuilt binaries for the MIT-licensed Mindmory source repository. Runs entirely
-on your own machine: no Docker, no PostgreSQL, no telemetry, no cloud. Your memories live
-in \`var/data/\` as human-readable JSONL.
+Prebuilt binaries for the MIT-licensed Mindmory source repository. The default
+runtime stays on your own machine: no Docker, no PostgreSQL, and no telemetry.
+Your memories live in \`var/data/\` as human-readable JSONL.
 
 ### What changed in $TAG
 
-- Codex and Claude Code integrations now checkpoint both the exact user prompt
-  and the completed assistant response.
-- DeepSeek Harness now ships a credential-free local lifecycle relay over its
-  canonical user/message and assembled assistant/message events.
-- Assistant replies retain their role and host identity in canonical JSONL and
-  the complete SQLite read projection.
-- Hook retries remain idempotent even when their invocation timestamp changes.
-- Existing v0.1.1 installations must merge the new \`Stop\` hook from the
-  bundled Codex or Claude Code template. DeepSeek Harness users must add the
-  bundled \`mindmory-checkpoint-relay\` profile entry and remove any legacy
-  \`@deepseek-ai/dsh-checkpoint-relay\` entry. Upgrading the binary alone does
-  not edit host configuration.
+- Native Porter-tokenized FTS5 and BM25 ranking augment the trigram/CJK index,
+  with stronger exact-identifier anchoring and bounded candidate hydration.
+- Resource-controlled SQLite reconstruction uses a bounded WAL connection pool
+  and atomic commit, so searches continue against the current generation while
+  a replacement is built and use the replacement immediately after commit.
+- Compact MCP hits avoid repeating snippets already represented by compact
+  content, reducing retrieval-context token use.
+- \`mindmoryctl providers certify [--probe]\` validates authority, disclosure,
+  identity, determinism, and vector dimensions. The optional probe sends only
+  fixed synthetic strings and never reads canonical memory.
+- Source-only evaluation now covers reproducible short, medium, long, and
+  superlong synthetic corpora and the coding-agent-life-v1 fixture format.
+- Remote retrieval providers fail closed before canonical-derived text is sent
+  when their declared authority or disclosure contract is invalid.
+
+### Validation snapshot
+
+- 200 scored synthetic scale queries across 240, 1,000, 10,000, and 50,000
+  memories: Recall@1/5/10 1.000, negative false-positive rate 0, repeat
+  stability 1.000.
+- At 50,000 memories: 2.4 ms search p50, 6.6 ms p95, and 6.9 s index build on
+  the release test host. These are synthetic local measurements, not universal
+  hardware guarantees.
+- Concurrent-search regression: 1.3 ms search while a 10,000-memory index was
+  being reconstructed.
+
+### Upgrade note
+
+Installing a new daemon binary requires the normal service restart. If schema
+reconstruction is needed, the derived index is rebuilt from canonical JSONL;
+after its atomic commit, the running daemon uses it without a second restart.
 
 ### Platforms
 

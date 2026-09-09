@@ -1691,11 +1691,21 @@ func (s *Server) searchMemories(ctx context.Context, scope retrieval.SessionScop
 	// the query that actually matched, otherwise an alias-recovered CJK
 	// memory scores MatchNone against the English original and is dropped.
 	type candidateRow struct {
-		row   MemoryRow
-		query string
+		row       MemoryRow
+		query     string
+		relevance float64
+		bm25      bool
 	}
 	var candidates []candidateRow
+	indexedSearchSucceeded := false
 	if s.Store.Index != nil {
+		candidateLimit := request.EffectiveLimit() * 5
+		if candidateLimit < 40 {
+			candidateLimit = 40
+		}
+		if candidateLimit > 200 {
+			candidateLimit = 200
+		}
 		kinds := make([]string, 0, len(request.Kinds))
 		for _, kind := range request.Kinds {
 			kinds = append(kinds, string(kind))
@@ -1705,12 +1715,19 @@ func (s *Server) searchMemories(ctx context.Context, scope retrieval.SessionScop
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			ids, err := s.Store.Index.SearchCandidates(q, scope.ProjectKey, kinds, 200)
+			indexed, err := s.Store.Index.SearchRankedCandidates(q, scope.ProjectKey, kinds, candidateLimit)
 			if err != nil {
 				s.Log.Error("index search failed", "error", err)
 				// Fall back to full scan on index trouble — canonical JSONL
 				// is authoritative, the index is derived.
 				continue
+			}
+			indexedSearchSucceeded = true
+			ids := make([]string, len(indexed))
+			byID := make(map[string]IndexCandidate, len(indexed))
+			for i, candidate := range indexed {
+				ids[i] = candidate.MemoryID
+				byID[candidate.MemoryID] = candidate
 			}
 			rows, err := s.Store.Index.LoadMemories(ids)
 			if err != nil {
@@ -1725,11 +1742,16 @@ func (s *Server) searchMemories(ctx context.Context, scope retrieval.SessionScop
 					continue
 				}
 				seen[row.MemoryID] = true
-				candidates = append(candidates, candidateRow{row: row, query: q})
+				indexCandidate := byID[row.MemoryID]
+				candidates = append(candidates, candidateRow{row: row, query: q, relevance: indexCandidate.Relevance, bm25: indexCandidate.BM25})
 			}
 		}
 	}
-	if len(candidates) == 0 {
+	// An empty result from a healthy derived index is authoritative for the
+	// lexical candidate stage. Full-scanning canonical memory on every hard
+	// negative made latency linear in corpus size. Retain the scan only as a
+	// recovery path when the index is absent or every index query failed.
+	if len(candidates) == 0 && !indexedSearchSucceeded {
 		rows, err := s.Store.EligibleMemories(ctx, scope, request.Kinds, 0)
 		if err != nil {
 			return nil, err
@@ -1767,6 +1789,13 @@ func (s *Server) searchMemories(ctx context.Context, scope retrieval.SessionScop
 			if alt.Class != MatchNone {
 				match = alt
 			}
+		}
+		// Exact/subject/content classes remain protected. Inside the fuzzy
+		// class, however, retain the BM25 index's corpus-aware evidence so a
+		// rare identifier outweighs generic overlap such as "artifact" or
+		// "rollback". The previous scorer discarded candidate order here.
+		if match.Class == MatchFuzzy && candidate.bm25 && candidate.relevance > 0 {
+			match.Strength = candidate.relevance
 		}
 		// The index may have recalled this candidate via a truncated CJK
 		// prefix (the "薪尽火传的传" case: FTS/LIKE found 薪尽火传 inside
@@ -1989,6 +2018,9 @@ func (s *Server) vectorHits(ctx context.Context, scope retrieval.SessionScope, r
 	embedder := s.Embedder
 	if embedder == nil {
 		return nil, fmt.Errorf("semantic embedding provider unavailable")
+	}
+	if err := embedder.ProviderContract().Validate(); err != nil {
+		return nil, fmt.Errorf("semantic embedding provider contract: %w", err)
 	}
 	generation := s.Store.VectorStore.Generation()
 	if s.queryCache == nil {

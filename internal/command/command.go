@@ -3,6 +3,7 @@ package command
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"flag"
@@ -29,6 +30,9 @@ func Run(name, version string, arguments []string) int {
 	}
 	if len(arguments) > 0 && arguments[0] == "vectors" {
 		return runVectorCommand(arguments[1:])
+	}
+	if len(arguments) > 0 && arguments[0] == "providers" {
+		return runProviderCommand(arguments[1:])
 	}
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	showVersion := flags.Bool("version", false, "print version")
@@ -78,6 +82,35 @@ func Run(name, version string, arguments []string) int {
 	}
 	request.Header.Set("X-Admin-Token", cfg.Token)
 	return send(request, 3*time.Minute)
+}
+
+func runProviderCommand(arguments []string) int {
+	flags := flag.NewFlagSet("mindmoryctl providers certify", flag.ContinueOnError)
+	probe := flags.Bool("probe", false, "send fixed synthetic strings through the configured embedding provider")
+	if len(arguments) == 0 || arguments[0] != "certify" || flags.Parse(arguments[1:]) != nil || len(flags.Args()) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: mindmoryctl providers certify [--probe]")
+		return 2
+	}
+	cfg, err := lite.LoadEnv(lite.LookupEnv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "configuration rejected:", err)
+		return 2
+	}
+	embedder, err := lite.NewConfiguredEmbedder(cfg.Embedding)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "provider rejected:", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Embedding.Timeout)
+	defer cancel()
+	report := lite.CertifyEmbeddingProvider(ctx, embedder, *probe)
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		return 1
+	}
+	if !report.Passed {
+		return 1
+	}
+	return 0
 }
 
 // hookInput is the common subset emitted by Codex and Claude Code for a

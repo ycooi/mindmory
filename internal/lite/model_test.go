@@ -5,6 +5,47 @@ import (
 	"time"
 )
 
+func FuzzRetrievalTokenSetDeterministic(f *testing.F) {
+	for _, seed := range []string{
+		"What was the multi-arch Docker fix?",
+		"unrelated spacecraft propulsion request 501",
+		"running tasks",
+		"中文 memory 查找",
+		"status analysis census",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		original := tokenSet(input)
+		first := retrievalTokenSet(input)
+		second := retrievalTokenSet(input)
+		if len(original) > 0 && len(first) == 0 {
+			t.Fatal("retrieval normalization removed every searchable token")
+		}
+		if len(first) != len(second) {
+			t.Fatal("retrieval normalization is not deterministic")
+		}
+		for token := range first {
+			if token == "" || !second[token] {
+				t.Fatalf("invalid or unstable normalized token %q", token)
+			}
+		}
+	})
+}
+
+func TestRetrievalTokenSetConservativeConceptExpansion(t *testing.T) {
+	query := retrievalTokenSet("recovery copy 001 that cannot be changed")
+	for _, token := range []string{"recovery", "restoration", "copy", "backup", "snapshot", "immutable"} {
+		if !query[token] {
+			t.Errorf("expanded query missing %q: %#v", token, query)
+		}
+	}
+	unanchored := retrievalTokenSet("How are safe backups supposed to be made?")
+	if unanchored["copy"] || unanchored["snapshot"] {
+		t.Fatalf("unanchored query expanded broad concepts: %#v", unanchored)
+	}
+}
+
 func TestLinkedinOrderingConcrete(t *testing.T) {
 	wr := RankKeyFor(MemoryRow{
 		MemoryID: "war", Lifecycle: "ACTIVE", Confidence: 1.0, Importance: 0.5,

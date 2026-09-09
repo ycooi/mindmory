@@ -166,7 +166,7 @@ func contentPhraseContains(content, needle string) bool { return strings.Contain
 // is not penalized for being long. The secondary coverage bonus (query char
 // share of field) only breaks ties between equal token-hit fractions.
 func MatchStrength(query, field string) float64 {
-	q := tokenSet(query)
+	q := retrievalTokenSet(query)
 	if len(q) == 0 {
 		return 0
 	}
@@ -234,11 +234,11 @@ func isWordRune(r rune) bool {
 }
 
 func overlapStrength(query, text string) float64 {
-	q := tokenSet(query)
+	q := retrievalTokenSet(query)
 	if len(q) == 0 {
 		return 0
 	}
-	t := tokenSet(text)
+	t := retrievalTokenSet(text)
 	matched := 0
 	for token := range q {
 		if t[token] {
@@ -254,6 +254,119 @@ func overlapStrength(query, text string) float64 {
 		return 0
 	}
 	return float64(matched) / float64(len(q))
+}
+
+// retrievalTokenSet removes common English question glue before measuring
+// lexical overlap. Those words are useful inside an exact phrase but are poor
+// evidence on their own: without this filter, "what was the ... fix" can rank
+// unrelated memories containing "was" and "the" above the one containing the
+// distinctive product or component name. Non-English tokens are retained, and
+// if every token is filtered the original token set is returned so short
+// preference/identity questions do not become unsearchable.
+func retrievalTokenSet(value string) map[string]bool {
+	// Normalize a small number of high-confidence multiword concepts before
+	// tokenization. Expansion is enabled only when the query also has a
+	// numeric/structured discriminator. Without that precision anchor, broad
+	// concepts such as "backup" should remain for semantic retrieval instead
+	// of flooding lexical candidates with related but non-equivalent records.
+	normalized := strings.ToLower(value)
+	conceptExpansion := tokenSetHasDigit(tokenSet(normalized))
+	if conceptExpansion {
+		normalized = strings.NewReplacer(
+			"cannot be changed", "cannot be changed immutable",
+			"can't be changed", "can't be changed immutable",
+		).Replace(normalized)
+	}
+	original := tokenSet(normalized)
+	filtered := make(map[string]bool, len(original))
+	for token := range original {
+		stem := retrievalStem(token)
+		if !retrievalStopWords[token] && !retrievalStopWords[stem] {
+			filtered[stem] = true
+			if conceptExpansion {
+				for _, synonym := range retrievalSynonyms[stem] {
+					filtered[synonym] = true
+				}
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		return original
+	}
+	return filtered
+}
+
+func tokenSetHasDigit(tokens map[string]bool) bool {
+	for token := range tokens {
+		for _, r := range token {
+			if r >= '0' && r <= '9' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// retrievalSynonyms covers conservative equivalences that commonly bridge
+// how engineers ask for a memory and how it was recorded. The expansion is
+// deliberately small: broad thesaurus expansion raises false positives.
+var retrievalSynonyms = map[string][]string{
+	"backup":      {"copy", "snapshot"},
+	"copy":        {"backup", "snapshot"},
+	"snapshot":    {"backup", "copy"},
+	"recover":     {"restore", "restoration"},
+	"recovery":    {"restore", "restoration"},
+	"restoration": {"recover", "recovery", "restore"},
+	"restore":     {"recover", "recovery", "restoration"},
+}
+
+// retrievalStem handles only common English inflections used in natural
+// language questions. It is intentionally narrower than a general language
+// stemmer: exact phrase classes are untouched, short tokens and non-ASCII
+// scripts are unchanged, and the result is used only for fuzzy overlap.
+func retrievalStem(token string) string {
+	for _, r := range token {
+		if r < 'a' || r > 'z' {
+			return token
+		}
+	}
+	stem := token
+	switch {
+	case len(stem) > 5 && strings.HasSuffix(stem, "ing"):
+		stem = strings.TrimSuffix(stem, "ing")
+		stem = trimDoubledFinalASCII(stem)
+	case len(stem) > 4 && strings.HasSuffix(stem, "ied"):
+		stem = strings.TrimSuffix(stem, "ied") + "y"
+	case len(stem) > 4 && strings.HasSuffix(stem, "ed"):
+		stem = strings.TrimSuffix(stem, "ed")
+		stem = trimDoubledFinalASCII(stem)
+	case len(stem) > 3 && strings.HasSuffix(stem, "s") &&
+		!strings.HasSuffix(stem, "ss") && !strings.HasSuffix(stem, "us") && !strings.HasSuffix(stem, "is"):
+		stem = strings.TrimSuffix(stem, "s")
+	}
+	if len(stem) < 2 {
+		return token
+	}
+	return stem
+}
+
+func trimDoubledFinalASCII(value string) string {
+	if len(value) >= 2 && value[len(value)-1] == value[len(value)-2] {
+		return value[:len(value)-1]
+	}
+	return value
+}
+
+var retrievalStopWords = map[string]bool{
+	"about": true, "after": true, "and": true, "are": true,
+	"before": true, "can": true, "could": true, "did": true,
+	"does": true, "for": true, "from": true, "how": true,
+	"into": true, "our": true, "should": true, "that": true,
+	"request": true,
+	"the":     true, "this": true, "was": true, "were": true,
+	"what": true, "when": true, "where": true, "which": true,
+	"will": true, "with": true, "would": true, "you": true,
+	"your": true,
 }
 
 // confidenceFactor down-weights retrieval for low-confidence/disputed

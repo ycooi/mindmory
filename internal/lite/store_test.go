@@ -835,6 +835,9 @@ type testEmbedder struct {
 }
 
 func (e testEmbedder) ModelName() string { return e.model }
+func (e testEmbedder) ProviderContract() RetrievalProviderContract {
+	return RetrievalProviderContract{ContractVersion: RetrievalProviderContractVersion, Provider: "test", Surface: "embedding", Locality: "local", ModelName: e.model, SupportsSemantic: true, SupportsBatch: true, MaximumBatchSize: 16}
+}
 func (e testEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i := range texts {

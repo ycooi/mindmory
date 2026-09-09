@@ -14,6 +14,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS memories_current (
   project_key TEXT NOT NULL DEFAULT '', disputed INTEGER NOT NULL DEFAULT 0,
   secret_like INTEGER NOT NULL DEFAULT 0,
   instruction_like INTEGER NOT NULL DEFAULT 0,
+  index_eligible INTEGER NOT NULL DEFAULT 0,
   updated_at_unix_nano INTEGER NOT NULL,
   record_json BLOB NOT NULL
 );
@@ -76,6 +79,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   memory_id UNINDEXED,
   tokenize = 'trigram'
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_bm25 USING fts5(
+  subject, content,
+  kind UNINDEXED, scope UNINDEXED, project_key UNINDEXED,
+  lifecycle UNINDEXED, sensitivity UNINDEXED, memory_id UNINDEXED,
+  tokenize = 'porter unicode61'
+);
 `
 
 // MemoryIndex is the SQLite-backed read projection for memories, archived
@@ -102,7 +111,12 @@ func OpenMemoryIndex(path string) (*MemoryIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open index: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	// WAL permits readers to keep using the last committed projection while
+	// one connection rebuilds the next version. Keep this pool deliberately
+	// small: the daemon is a background service and must not fan out enough
+	// work to pressure the host.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=10000",
@@ -122,8 +136,9 @@ func OpenMemoryIndex(path string) (*MemoryIndex, error) {
 	// This database is disposable. Recreating an older projection is safer
 	// than carrying a chain of migrations for data that canonical JSONL can
 	// reproduce exactly.
-	if schemaVersion != 4 {
+	if schemaVersion != 6 {
 		if _, err := db.Exec(`DROP TABLE IF EXISTS memories_fts;
+DROP TABLE IF EXISTS memories_bm25;
 DROP TABLE IF EXISTS evidence_current;
 DROP TABLE IF EXISTS messages_current;
 DROP TABLE IF EXISTS vector_refs;
@@ -134,7 +149,7 @@ DROP TABLE IF EXISTS index_meta;`); err != nil {
 			return nil, fmt.Errorf("reset old index schema: %w", err)
 		}
 	}
-	if _, err := db.Exec(indexSchema + "\nPRAGMA user_version=4;"); err != nil {
+	if _, err := db.Exec(indexSchema + "\nPRAGMA user_version=6;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("index schema: %w", err)
 	}
@@ -158,7 +173,7 @@ func (m *MemoryIndex) Checkpoint() error {
 // row changes the fingerprint, so the index knows when it is stale.
 func Fingerprint(rows []MemoryRow) string {
 	hasher := sha256.New()
-	_, _ = hasher.Write([]byte("index-schema=4;tokenizer=fts5-trigram;normalization=1\n"))
+	_, _ = hasher.Write([]byte("index-schema=6;tokenizers=fts5-trigram+porter-bm25;normalization=2;set-build=1\n"))
 	rows = append([]MemoryRow(nil), rows...)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
 	for _, row := range rows {
@@ -226,6 +241,9 @@ func SupportFingerprint(messages []MessageRow, evidence []MessageEvidenceRow) st
 // RebuildFrom replaces the entire index content with rows and records the
 // fingerprint. It is the recovery path after JSONL migration or index loss.
 func (m *MemoryIndex) RebuildFrom(rows []MemoryRow) error {
+	rows = append([]MemoryRow(nil), rows...)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
+	fp := Fingerprint(rows)
 	tx, err := m.db.Begin()
 	if err != nil {
 		return err
@@ -234,24 +252,46 @@ func (m *MemoryIndex) RebuildFrom(rows []MemoryRow) error {
 	if _, err := tx.Exec("DELETE FROM memories_fts"); err != nil {
 		return err
 	}
+	if _, err := tx.Exec("DELETE FROM memories_bm25"); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("DELETE FROM memories_current"); err != nil {
 		return err
 	}
-	rows = append([]MemoryRow(nil), rows...)
-	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
-	for _, row := range rows {
-		if err := upsertCurrentRow(tx, row); err != nil {
+	currentStmt, err := tx.Prepare(upsertCurrentRowSQL)
+	if err != nil {
+		return err
+	}
+	defer currentStmt.Close()
+	for i, row := range rows {
+		args, err := currentRowArgs(row)
+		if err != nil {
 			return err
 		}
-		if memoryRowPolicyAllowed(row) && row.Lifecycle == "ACTIVE" {
-			if err := insertIndexedRow(tx, row); err != nil {
-				return err
-			}
+		if _, err := currentStmt.Exec(args...); err != nil {
+			return err
+		}
+		// A rebuild intentionally uses one SQLite writer. Yield periodically so
+		// foreground daemon goroutines remain responsive on smaller machines.
+		if i&255 == 255 {
+			runtime.Gosched()
 		}
 	}
-	fp := Fingerprint(rows)
+	// Let SQLite stream eligible rows into each FTS projection internally.
+	// Crossing the Go/SQL boundary twice per memory dominated reconstruction
+	// time even with prepared statements.
+	if _, err := tx.Exec(`INSERT INTO memories_fts(subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id)
+		SELECT subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id
+		FROM memories_current WHERE index_eligible=1 AND lifecycle='ACTIVE' ORDER BY memory_id`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO memories_bm25(subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id)
+		SELECT subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id
+		FROM memories_current WHERE index_eligible=1 AND lifecycle='ACTIVE' ORDER BY memory_id`); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`INSERT INTO projection_state(projection_name,projection_version,source_fingerprint,updated_at_unix_nano)
-		VALUES('memory',4,?,?) ON CONFLICT(projection_name) DO UPDATE SET projection_version=excluded.projection_version,
+		VALUES('memory',6,?,?) ON CONFLICT(projection_name) DO UPDATE SET projection_version=excluded.projection_version,
 		source_fingerprint=excluded.source_fingerprint,updated_at_unix_nano=excluded.updated_at_unix_nano`, fp, time.Now().UnixNano()); err != nil {
 		return err
 	}
@@ -266,26 +306,50 @@ type indexWriter interface {
 	Exec(string, ...any) (sql.Result, error)
 }
 
+const upsertCurrentRowSQL = `INSERT INTO memories_current(memory_id,kind,subject,content,content_hash,embedding_input_hash,lifecycle,sensitivity,scope,project_key,disputed,secret_like,instruction_like,index_eligible,updated_at_unix_nano,record_json)
+	VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET kind=excluded.kind,subject=excluded.subject,
+	content=excluded.content,content_hash=excluded.content_hash,embedding_input_hash=excluded.embedding_input_hash,lifecycle=excluded.lifecycle,
+	sensitivity=excluded.sensitivity,scope=excluded.scope,project_key=excluded.project_key,disputed=excluded.disputed,updated_at_unix_nano=excluded.updated_at_unix_nano,
+	secret_like=excluded.secret_like,instruction_like=excluded.instruction_like,index_eligible=excluded.index_eligible,record_json=excluded.record_json`
+
+const insertFTSRowSQL = `INSERT INTO memories_fts(subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id)
+	VALUES (?,?,?,?,?,?,?,?)`
+
+const insertBM25RowSQL = `INSERT INTO memories_bm25(subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id)
+	VALUES (?,?,?,?,?,?,?,?)`
+
+func indexedRowArgs(row MemoryRow) []any {
+	return []any{row.Subject, row.Content, row.Kind, row.ScopeType, row.ProjectKey,
+		row.Lifecycle, row.Sensitivity, row.MemoryID}
+}
+
 func insertIndexedRow(tx indexWriter, row MemoryRow) error {
-	_, err := tx.Exec(`INSERT INTO memories_fts(subject,content,kind,scope,project_key,lifecycle,sensitivity,memory_id)
-		VALUES (?,?,?,?,?,?,?,?)`,
-		row.Subject, row.Content, row.Kind, row.ScopeType, row.ProjectKey,
-		row.Lifecycle, row.Sensitivity, row.MemoryID)
+	args := indexedRowArgs(row)
+	if _, err := tx.Exec(insertFTSRowSQL, args...); err != nil {
+		return err
+	}
+	_, err := tx.Exec(insertBM25RowSQL, args...)
 	return err
 }
 
-func upsertCurrentRow(tx indexWriter, row MemoryRow) error {
+func currentRowArgs(row MemoryRow) ([]any, error) {
 	record, err := json.Marshal(row)
+	if err != nil {
+		return nil, err
+	}
+	return []any{
+		row.MemoryID, row.Kind, row.Subject, row.Content, row.ContentHash, EmbeddingInputHash(row), row.Lifecycle,
+		row.Sensitivity, row.ScopeType, row.ProjectKey, row.Disputed, boolInt(row.SecretLike), boolInt(row.InstructionLike),
+		boolInt(memoryRowPolicyAllowed(row)), row.UpdatedAt.UnixNano(), record,
+	}, nil
+}
+
+func upsertCurrentRow(tx indexWriter, row MemoryRow) error {
+	args, err := currentRowArgs(row)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO memories_current(memory_id,kind,subject,content,content_hash,embedding_input_hash,lifecycle,sensitivity,scope,project_key,disputed,secret_like,instruction_like,updated_at_unix_nano,record_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET kind=excluded.kind,subject=excluded.subject,
-		content=excluded.content,content_hash=excluded.content_hash,embedding_input_hash=excluded.embedding_input_hash,lifecycle=excluded.lifecycle,
-		sensitivity=excluded.sensitivity,scope=excluded.scope,project_key=excluded.project_key,disputed=excluded.disputed,updated_at_unix_nano=excluded.updated_at_unix_nano,
-		secret_like=excluded.secret_like,instruction_like=excluded.instruction_like,record_json=excluded.record_json`,
-		row.MemoryID, row.Kind, row.Subject, row.Content, row.ContentHash, EmbeddingInputHash(row), row.Lifecycle,
-		row.Sensitivity, row.ScopeType, row.ProjectKey, row.Disputed, boolInt(row.SecretLike), boolInt(row.InstructionLike), row.UpdatedAt.UnixNano(), record)
+	_, err = tx.Exec(upsertCurrentRowSQL, args...)
 	return err
 }
 
@@ -298,6 +362,9 @@ func (m *MemoryIndex) Upsert(row MemoryRow) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec("DELETE FROM memories_fts WHERE memory_id=?", row.MemoryID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM memories_bm25 WHERE memory_id=?", row.MemoryID); err != nil {
 		return err
 	}
 	if err := upsertCurrentRow(tx, row); err != nil {
@@ -695,6 +762,9 @@ func (m *MemoryIndex) Remove(memoryID string) error {
 	if _, err = tx.Exec("DELETE FROM memories_fts WHERE memory_id=?", memoryID); err != nil {
 		return err
 	}
+	if _, err = tx.Exec("DELETE FROM memories_bm25 WHERE memory_id=?", memoryID); err != nil {
+		return err
+	}
 	if _, err = tx.Exec("UPDATE memories_current SET lifecycle='FORGOTTEN' WHERE memory_id=?", memoryID); err != nil {
 		return err
 	}
@@ -769,7 +839,182 @@ func (m *MemoryIndex) ResolveVectorCandidates(generation, projectKey string, can
 // the query, using FTS5 trigram for queries of three or more runes and a
 // LIKE fallback for shorter CJK/ASCII queries the trigram index cannot
 // match. Scope/lifecycle/sensitivity filters are applied in SQL.
+// IndexCandidate is a policy-filtered lexical candidate. BM25 relevance is
+// normalized to 0..1 and is used only inside the fuzzy match class; exact,
+// subject, and content matches keep their protected semantic ordering.
+type IndexCandidate struct {
+	MemoryID  string
+	Relevance float64
+	BM25      bool
+}
+
+// SearchCandidates preserves the original ID-only API for administrative
+// callers and tests. Model-facing retrieval uses SearchRankedCandidates so it
+// can retain the index's rare-term evidence during final ranking.
 func (m *MemoryIndex) SearchCandidates(query string, projectKey string, kinds []string, limit int) ([]string, error) {
+	candidates, err := m.SearchRankedCandidates(query, projectKey, kinds, limit)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		ids[i] = candidate.MemoryID
+	}
+	return ids, nil
+}
+
+// SearchRankedCandidates uses a Porter-tokenized FTS5 projection and SQLite's
+// BM25 implementation for Latin-script queries. Mindmory retains its canonical
+// JSONL model and independent trigram/CJK fallback.
+func (m *MemoryIndex) SearchRankedCandidates(query string, projectKey string, kinds []string, limit int) ([]IndexCandidate, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || limit <= 0 {
+		return nil, nil
+	}
+	if !containsCJK(query) {
+		candidates, err := m.searchBM25Candidates(query, projectKey, kinds, limit)
+		if err == nil {
+			return candidates, nil
+		}
+		// The legacy index is a recovery path when the disposable BM25
+		// projection is unavailable. A healthy empty BM25 result is
+		// authoritative and returns above without another index scan.
+	}
+	ids, err := m.searchLegacyCandidates(query, projectKey, kinds, limit)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]IndexCandidate, len(ids))
+	for i, id := range ids {
+		candidates[i] = IndexCandidate{MemoryID: id}
+	}
+	return candidates, nil
+}
+
+func (m *MemoryIndex) searchBM25Candidates(query, projectKey string, kinds []string, limit int) ([]IndexCandidate, error) {
+	set := retrievalTokenSet(query)
+	terms := make([]string, 0, len(set))
+	for term := range set {
+		if len([]rune(term)) >= 2 {
+			terms = append(terms, term)
+		}
+	}
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	sort.Strings(terms)
+	matchTerms := make([]string, len(terms))
+	for i, term := range terms {
+		matchTerms[i] = quoteFTS(term)
+	}
+	matchExpression := strings.Join(matchTerms, " OR ")
+	// Mixed letter/digit tokens are normally issue keys, hashes, artifact
+	// handles, or versioned identifiers. Requiring them when present prevents
+	// broad words such as "policy" or "deployment" from expanding a precise
+	// lookup across the whole corpus. All query terms still participate in
+	// BM25 scoring inside the constrained candidate set.
+	anchors := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if mixedAlphaNumeric(term) {
+			anchors = append(anchors, quoteFTS(term))
+		}
+	}
+	if len(anchors) > 0 {
+		anchoredExpression := "(" + strings.Join(anchors, " OR ") + ") AND (" + matchExpression + ")"
+		candidates, err := m.queryBM25Candidates(anchoredExpression, projectKey, kinds, limit)
+		if err != nil || len(candidates) > 0 {
+			return candidates, err
+		}
+		// A structured token may be mentioned only in the question (for
+		// example a shorthand version). Retry the unconstrained query rather
+		// than converting an optimization into a false negative.
+	}
+	return m.queryBM25Candidates(matchExpression, projectKey, kinds, limit)
+}
+
+func (m *MemoryIndex) queryBM25Candidates(matchExpression, projectKey string, kinds []string, limit int) ([]IndexCandidate, error) {
+	// Subject is intentionally weighted above content. The remaining FTS
+	// columns are UNINDEXED and receive zero weight for clarity.
+	sqlQuery := `SELECT memory_id,
+		bm25(memories_bm25, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) AS score
+		FROM memories_bm25 WHERE memories_bm25 MATCH ?`
+	args := []any{matchExpression}
+	sqlQuery += ` AND lifecycle='ACTIVE' AND sensitivity='NORMAL'`
+	sqlQuery += ` AND (scope='GLOBAL' OR (? <> '' AND scope='PROJECT' AND project_key=?))`
+	args = append(args, projectKey, projectKey)
+	if len(kinds) > 0 {
+		placeholders := make([]string, 0, len(kinds))
+		for _, kind := range kinds {
+			placeholders = append(placeholders, "?")
+			args = append(args, kind)
+		}
+		sqlQuery += ` AND kind IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	sqlQuery += ` ORDER BY score ASC, memory_id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := m.db.Query(sqlQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := make([]IndexCandidate, 0, limit)
+	for rows.Next() {
+		var id string
+		var rawScore float64
+		if err := rows.Scan(&id, &rawScore); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, IndexCandidate{MemoryID: id, Relevance: normalizeBM25(rawScore), BM25: true})
+	}
+	return candidates, rows.Err()
+}
+
+func mixedAlphaNumeric(value string) bool {
+	var letter, digit bool
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			digit = true
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			letter = true
+		}
+	}
+	if !letter || !digit {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, suffix := range []string{"st", "nd", "rd", "th"} {
+		prefix := strings.TrimSuffix(lower, suffix)
+		if prefix != lower && prefix != "" {
+			allDigits := true
+			for _, r := range prefix {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func normalizeBM25(rawScore float64) float64 {
+	// SQLite FTS5 returns lower (normally negative) BM25 values for stronger
+	// matches. This rational transform preserves meaningful separation even
+	// for large-corpus scores; an exponential transform saturated and rounded
+	// distinct rare-term matches to the same 1.0 score above ~1,000 rows.
+	if rawScore >= 0 || math.IsNaN(rawScore) {
+		return 0
+	}
+	strength := -rawScore
+	value := strength / (1 + strength)
+	return round6(value)
+}
+
+func (m *MemoryIndex) searchLegacyCandidates(query string, projectKey string, kinds []string, limit int) ([]string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil

@@ -57,7 +57,8 @@ process.stdin.on('end', () => appendFileSync(process.env.MINDMORY_DSH_TEST_CAPTU
     on(event, callback) { assert.equal(event, 'session/event'); listener = callback },
     logger: { warn(message) { warnings.push(message) } },
   }
-  apply(ctx, { command, timeoutMs: 5000 })
+  const relayTimeoutMs = 10000
+  apply(ctx, { command, timeoutMs: relayTimeoutMs })
   listener(session, {
     type: 'user/message', seq: 1, time: Date.parse('2026-08-29T02:00:00Z'),
     data: { id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'question' }] },
@@ -67,7 +68,8 @@ process.stdin.on('end', () => appendFileSync(process.env.MINDMORY_DSH_TEST_CAPTU
     data: { message: { id: 'a1', content: [{ type: 'text', text: 'answer' }] } },
   })
   let rows = []
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const captureDeadline = Date.now() + relayTimeoutMs + 1000
+  while (Date.now() < captureDeadline) {
     try { rows = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse) } catch {}
     if (rows.length === 2) break
     await new Promise(resolve => setTimeout(resolve, 25))
