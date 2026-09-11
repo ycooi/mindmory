@@ -146,6 +146,7 @@ func main() {
 		os.Exit(1)
 	}
 	server := lite.NewServer(store, cfg.Owner, cfg.CursorKey, envOr("MINDMORY_ADMIN_TOKEN", ""), cfg.MCPClients, log, trustLocal)
+	server.LoadAliases(cfg.AliasFile)
 	server.Embedder = embedder
 	server.SemanticSearch = &cfg.SemanticEnabled
 	initialization := server.InitializeStatus(cfg.Storage, cfg.Embedding, cfg.SemanticEnabled)

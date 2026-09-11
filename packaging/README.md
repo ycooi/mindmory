@@ -194,6 +194,7 @@ write `mindmory-config.sh` with these variables (requirements enforced at startu
 | `MINDMORY_HTTP_PORT` | Host port for the daemon (default `58080`). |
 | `MINDMORY_ROOT_DIR` | Base directory for relative storage paths (default current directory). |
 | `MINDMORY_DATA_DIR` | Canonical JSONL directory (default `var/data`). |
+| `MINDMORY_ALIAS_FILE` | Optional alias JSON array; defaults to `aliases.json` in the data directory. Restart after edits. |
 | `MINDMORY_DERIVED_DIR` | Rebuildable SQLite directory (default `var/derived`). |
 | `MINDMORY_VECTOR_DIR` | Rebuildable vector generations (default `var/derived/vectors`). |
 | `MINDMORY_SNAPSHOT_DIR` | Integrity-checked snapshots (default `var/data/snapshots`). |

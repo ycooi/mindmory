@@ -70,31 +70,20 @@ Your memories live in \`var/data/\` as human-readable JSONL.
 
 ### What changed in $TAG
 
-- Native Porter-tokenized FTS5 and BM25 ranking augment the trigram/CJK index,
-  with stronger exact-identifier anchoring and bounded candidate hydration.
-- Resource-controlled SQLite reconstruction uses a bounded WAL connection pool
-  and atomic commit, so searches continue against the current generation while
-  a replacement is built and use the replacement immediately after commit.
-- Compact MCP hits avoid repeating snippets already represented by compact
-  content, reducing retrieval-context token use.
-- \`mindmoryctl providers certify [--probe]\` validates authority, disclosure,
-  identity, determinism, and vector dimensions. The optional probe sends only
-  fixed synthetic strings and never reads canonical memory.
-- Source-only evaluation now covers reproducible short, medium, long, and
-  superlong synthetic corpora and the coding-agent-life-v1 fixture format.
-- Remote retrieval providers fail closed before canonical-derived text is sent
-  when their declared authority or disclosure contract is invalid.
+- CJK canonical names are recovered inside sentences, with longest-occurrence
+  matching that preserves independently mentioned shorter names.
+- CJK alias phrases match inside unspaced queries.
+- Optional startup alias overlays extend built-ins through MINDMORY_ALIAS_FILE.
+- Standalone-only reverse paraphrases prevent sentence-query expansion flooding.
+- Thanks to Ember for reporting and investigating these defects.
 
-### Validation snapshot
+### Validation scope
 
-- 200 scored synthetic scale queries across 240, 1,000, 10,000, and 50,000
-  memories: Recall@1/5/10 1.000, negative false-positive rate 0, repeat
-  stability 1.000.
-- At 50,000 memories: 2.4 ms search p50, 6.6 ms p95, and 6.9 s index build on
-  the release test host. These are synthetic local measurements, not universal
-  hardware guarantees.
-- Concurrent-search regression: 1.3 ms search while a 10,000-memory index was
-  being reconstructed.
+The release adds 100 synthetic retrieval cases across ten query classes without
+shared fixture identifiers. These are targeted regression tests, not a claim of
+universal multilingual recall. The older ordinal-based fixtures remain useful
+for identifier retrieval and injected-alias plumbing; they do not establish
+shipped alias coverage or general paraphrase quality.
 
 ### Upgrade note
 
