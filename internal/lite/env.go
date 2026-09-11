@@ -18,6 +18,7 @@ import (
 // EnvConfig is the minimal environment contract for the lite daemon. It
 // reads exactly what the harness needs — nothing more.
 type EnvConfig struct {
+	AliasFile        string
 	Owner            string
 	CursorKey        string
 	MCPClients       map[string]config.MCPPrincipalConfig
@@ -74,6 +75,10 @@ func LoadEnv(lookup func(string) (string, bool)) (EnvConfig, error) {
 	}
 	cfg.Storage.RootDir = filepath.Clean(root)
 	cfg.Storage.DataDir = storagePath(root, value("MINDMORY_DATA_DIR"), filepath.Join("var", "data"))
+	cfg.AliasFile = filepath.Join(cfg.Storage.DataDir, "aliases.json")
+	if value("MINDMORY_ALIAS_FILE") != "" {
+		cfg.AliasFile = storagePath(root, value("MINDMORY_ALIAS_FILE"), "")
+	}
 	cfg.Storage.DerivedDir = storagePath(root, value("MINDMORY_DERIVED_DIR"), filepath.Join("var", "derived"))
 	cfg.Storage.VectorDir = storagePath(root, value("MINDMORY_VECTOR_DIR"), filepath.Join("var", "derived", "vectors"))
 	cfg.Storage.SnapshotDir = storagePath(root, value("MINDMORY_SNAPSHOT_DIR"), filepath.Join("var", "data", "snapshots"))

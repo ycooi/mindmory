@@ -185,6 +185,7 @@ Paths are configurable and relative to `MINDMORY_ROOT_DIR` unless absolute.
 | Variable | Default | Role |
 | --- | --- | --- |
 | `MINDMORY_DATA_DIR` | `var/data` | Canonical JSONL authority data |
+| `MINDMORY_ALIAS_FILE` | data directory + `aliases.json` | Optional startup alias overlay |
 | `MINDMORY_DERIVED_DIR` | `var/derived` | Rebuildable SQLite index |
 | `MINDMORY_VECTOR_DIR` | `var/derived/vectors` | Rebuildable vector generations |
 | `MINDMORY_SNAPSHOT_DIR` | `var/data/snapshots` | Integrity-checked snapshots |
@@ -277,3 +278,26 @@ Copyright OOI YC and KELE Research. Licensed under the [MIT License](LICENSE).
 Complete upstream terms for modules compiled into release binaries are indexed
 in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and reproduced in
 `THIRD_PARTY_LICENSES.txt`.
+
+### Multilingual aliases
+
+An optional `aliases.json` in the configured data directory extends the built-in
+vocabulary. Set `MINDMORY_ALIAS_FILE` to select another file; relative overrides
+resolve against `MINDMORY_ROOT_DIR`. Restart the daemon after edits.
+
+```json
+[{"canonical":"青岚计划","aliases":["blue mist project"]}]
+```
+
+Entries sharing a canonical name append case-insensitively deduplicated aliases;
+built-ins remain available. A missing file is optional. Invalid or unreadable
+files produce a warning and retain the built-ins. The loader accepts JSON arrays
+up to 1 MiB, with up to 1,000 entries and 100 phrases per entry.
+
+CJK names and aliases can match inside sentences. Overlapping canonical names
+use the longest occurrence; a shorter name mentioned separately still matches.
+Reverse paraphrases expand only for standalone canonical names. Cross-language
+coverage depends on the configured vocabulary; this is not general translation.
+
+See [multilingual validation](docs/lite/MULTILINGUAL_VALIDATION.md) for the
+100-case regression gate and the limitations of older benchmark results.

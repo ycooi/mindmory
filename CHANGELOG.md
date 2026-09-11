@@ -3,6 +3,27 @@
 All notable changes to Mindmory are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-09-11
+
+### Fixed
+
+- Recover CJK canonical names embedded in sentences; resolve overlapping names
+  by occurrence so separately mentioned shorter names remain searchable.
+- Match unspaced CJK alias phrases inside longer queries.
+- Load the optional alias overlay at daemon startup through `MINDMORY_ALIAS_FILE`,
+  defaulting to the configured data directory's `aliases.json`. Invalid files
+  retain built-ins and produce a warning without exposing file contents.
+- Limit reverse paraphrase expansion to standalone canonical names to avoid
+  flooding sentence queries with weak alternatives.
+
+### Validation
+
+- Add 100 synthetic retrieval cases across ten query classes, without fixture
+  identifiers in memory or query text, plus alias configuration and HTTP tests.
+- Clarify that the older ordinal-based corpus measures identifier retrieval
+  and injected-alias plumbing, not general multilingual or paraphrase quality.
+- Thanks to Ember for reporting and investigating the multilingual defects.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

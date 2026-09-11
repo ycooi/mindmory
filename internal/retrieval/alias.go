@@ -17,6 +17,7 @@
 package retrieval
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -35,7 +36,7 @@ type AliasEntry struct {
 // defaultAliases is the curated Ember-domain entity table. It is small on
 // purpose: every entry risks false positives, so only well-established
 // entities belong here. The daemon can overlay a user-supplied table from
-// var/data/aliases.json (see LiteConfig) — same shape, loaded at startup.
+// the configured data directory's aliases.json, loaded at startup.
 var defaultAliases = []AliasEntry{
 	{
 		Canonical: "余烬永温",
@@ -126,8 +127,8 @@ type AliasExpander struct {
 	entries []AliasEntry
 }
 
-// NewAliasExpander builds an expander from the given entries. A nil or
-// empty table yields the no-op expander (identity on every query).
+// NewAliasExpander builds an expander from the given entries. A nil table uses
+// the built-ins; an empty non-nil table yields the no-op expander.
 func NewAliasExpander(entries []AliasEntry) *AliasExpander {
 	if entries == nil {
 		entries = defaultAliases
@@ -145,8 +146,8 @@ func DefaultAliases() []AliasEntry {
 // Expand returns the query plus every distinct expansion. The original
 // query is always first. Expansions are produced only when an alias
 // actually matches the query, and each expansion is the canonical term
-// itself (so the normal matcher can find the memory). If no alias matches,
-// the result is exactly [query].
+// itself. CJK canonical occurrences also recover the canonical; standalone
+// CJK names can reverse-expand to foreign aliases. Otherwise the result is [query].
 func (x *AliasExpander) Expand(query string) []string {
 	if x == nil || len(x.entries) == 0 {
 		return []string{query}
@@ -157,57 +158,39 @@ func (x *AliasExpander) Expand(query string) []string {
 	}
 	seen := map[string]bool{query: true}
 	expanded := []string{query}
-	for _, entry := range x.entries {
+	add := func(value string) {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			expanded = append(expanded, value)
+		}
+	}
+	matches := x.canonicalMatches(lower)
+	for i, entry := range x.entries {
 		canonical := entry.Canonical
 		if canonical == "" {
 			continue
 		}
 		if aliasMatches(lower, entry.Aliases) {
-			// query matches a foreign alias -> add the canonical term
-			if !seen[canonical] {
-				seen[canonical] = true
-				expanded = append(expanded, canonical)
-			}
+			add(canonical)
 			continue
 		}
-		// Reverse direction: the query contains the canonical term, so the
-		// foreign aliases are the useful expansions ("example person" from
-		// 示例用户) that match the English subjects stored in memory. Without
-		// this, a Chinese query never reaches English records that mention
-		// the same person.
-		//
-		// The canonical must be a WHOLE-token match, not a bare substring:
-		// "余烬永温" contains "余烬", but that must not pull in the 余烬
-		// entry's aliases (ember / live ember) — those are for the shorter
-		// name, and expanding them from the longer phrase floods the query
-		// with weak fuzzy matches. Single-word aliases are also skipped in
-		// the reverse direction: "ember" as a query is too broad.
-		// Reverse expansion is only meaningful for CJK canonicals: the
-		// user searched in Chinese and the English aliases match the stored
-		// English subjects. ASCII canonicals (LinkedIn, Ember) are already
-		// English — reverse-expanding them from any query containing the
-		// word ("linkedin positioning" -> "linkedin account") pulls in
-		// unrelated records and floods the result set.
-		if !containsCJK(canonical) {
+		if !containsCJK(canonical) || !matches[i] {
 			continue
 		}
-		if canonicalTokenMatch(lower, canonical) {
-			for _, alias := range entry.Aliases {
-				if alias == "" || seen[alias] {
-					continue
-				}
-				// Single-token reverse expansion is allowed only for
-				// distinctive words (>= 6 runes): "hangzhou" (8) is a
-				// precise place name, while "ember" (5) is a common word
-				// that would flood the query with weak fuzzy matches.
-				if len(strings.Fields(alias)) < 2 && len([]rune(alias)) < 6 {
-					continue
-				}
-				seen[alias] = true
-				expanded = append(expanded, alias)
+		add(canonical)
+		// A name embedded in a sentence recovers that name, without flooding
+		// retrieval with every paraphrase. Standalone names retain reverse lookup.
+		if strings.Trim(strings.TrimSpace(lower), "。！？!?.,，、\"'()（）") != strings.ToLower(canonical) {
+			continue
+		}
+		for _, alias := range entry.Aliases {
+			if len(strings.Fields(alias)) < 2 && len([]rune(alias)) < 6 {
+				continue
 			}
+			add(alias)
 		}
 	}
+
 	return expanded
 }
 
@@ -228,6 +211,12 @@ func aliasMatches(lowerQuery string, aliases []string) bool {
 	for _, alias := range aliases {
 		a := strings.ToLower(strings.TrimSpace(alias))
 		if a == "" {
+			continue
+		}
+		if containsCJK(a) {
+			if strings.Contains(lowerQuery, a) {
+				return true
+			}
 			continue
 		}
 		aliasTokens := strings.Fields(a)
@@ -267,11 +256,8 @@ func tokensSubset(needle, haystack []string) bool {
 	return true
 }
 
-// canonicalTokenMatch reports whether the canonical term appears in the
-// lowercased query as a whole token (word-boundary for ASCII, whole-run
-// containment for CJK). This prevents a shorter canonical (余烬) from
-// matching inside a longer query (余烬永温) and reverse-expanding the
-// wrong entry's aliases.
+// canonicalTokenMatch tests contiguous canonical text. Overlapping CJK names
+// are disambiguated separately by canonicalMatches.
 func canonicalTokenMatch(lowerQuery, canonical string) bool {
 	canon := strings.ToLower(canonical)
 	if canon == "" {
@@ -292,36 +278,8 @@ func canonicalTokenMatch(lowerQuery, canonical string) bool {
 	if !containsCJK(canon) && len(canonTokens) > 1 {
 		return strings.Contains(lowerQuery, canon)
 	}
-	// CJK canonical: the query's CJK run must equal the canonical, or the
-	// canonical must be a suffix/prefix of that run. This prevents the
-	// shorter canonical 余烬 from matching inside 余烬永温 (which would
-	// reverse-expand the wrong entry), while still allowing "杭州" to
-	// expand to hangzhou and "示例用户" to example person.
-	queryCJK := cjkRun(lowerQuery)
-	if queryCJK == "" {
-		return false
-	}
-	canonCJK := cjkRun(canon)
-	if canonCJK == "" {
-		return false
-	}
-	if queryCJK == canonCJK {
-		return true
-	}
-	// Allow canonical as the full query when query is exactly canonical.
-	return lowerQuery == canon
-}
-
-// cjkRun extracts the CJK run of a string (queries are short enough that
-// this is unambiguous in practice).
-func cjkRun(value string) string {
-	var b strings.Builder
-	for _, r := range value {
-		if isCJK(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	// Match actual contiguous text; never join separate runs across punctuation.
+	return strings.Contains(lowerQuery, canon)
 }
 
 // containsCJK reports whether value contains any CJK character. The range
@@ -340,4 +298,45 @@ func containsCJK(value string) bool {
 
 func isCJK(r rune) bool {
 	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+}
+
+// canonicalMatches resolves overlapping occurrences longest-first. A shorter
+// name mentioned separately remains eligible, regardless of table order.
+func (x *AliasExpander) canonicalMatches(query string) map[int]bool {
+	type occurrence struct{ entry, start, end int }
+	var occurrences []occurrence
+	for i, entry := range x.entries {
+		canon := strings.ToLower(strings.TrimSpace(entry.Canonical))
+		if canon == "" || !containsCJK(canon) || !canonicalTokenMatch(query, canon) {
+			continue
+		}
+		for offset := 0; offset < len(query); {
+			n := strings.Index(query[offset:], canon)
+			if n < 0 {
+				break
+			}
+			start := offset + n
+			occurrences = append(occurrences, occurrence{i, start, start + len(canon)})
+			offset = start + 1
+		}
+	}
+	sort.SliceStable(occurrences, func(i, j int) bool {
+		return occurrences[i].end-occurrences[i].start > occurrences[j].end-occurrences[j].start
+	})
+	selected := []occurrence{}
+	result := map[int]bool{}
+	for _, candidate := range occurrences {
+		overlap := false
+		for _, prior := range selected {
+			if candidate.start < prior.end && prior.start < candidate.end {
+				overlap = true
+				break
+			}
+		}
+		if !overlap {
+			selected = append(selected, candidate)
+			result[candidate.entry] = true
+		}
+	}
+	return result
 }
