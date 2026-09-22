@@ -11,7 +11,7 @@
 #
 # Usage:
 #   sh scripts/publish-release.sh                # tag from packaging/VERSION
-#   sh scripts/publish-release.sh --tag v0.2.0
+#   sh scripts/publish-release.sh --tag v0.2.2
 #   sh scripts/publish-release.sh --repo yourname/mindmory-mcp
 #   sh scripts/publish-release.sh --draft        # create as draft first
 #   sh scripts/publish-release.sh --clobber      # replace an existing tag
@@ -70,20 +70,26 @@ Your memories live in \`var/data/\` as human-readable JSONL.
 
 ### What changed in $TAG
 
-- CJK canonical names are recovered inside sentences, with longest-occurrence
-  matching that preserves independently mentioned shorter names.
-- CJK alias phrases match inside unspaced queries.
-- Optional startup alias overlays extend built-ins through MINDMORY_ALIAS_FILE.
-- Standalone-only reverse paraphrases prevent sentence-query expansion flooding.
-- Thanks to Ember for reporting and investigating these defects.
+- Native Codex and DeepSeek Harness integrations checkpoint both sides of a
+  conversation and inject only a strict, bounded relevance packet. They require
+  no model-visible MCP tools, so unrelated sessions pay zero Mindmory tokens.
+- The default compact MCP profile replaces thirteen eagerly described tools
+  with one gateway, reducing fixed schema bytes by more than 90 percent while
+  preserving an opt-in full compatibility profile.
+- Strict automatic relevance rejects weak heat-dominated matches and supports
+  a deliberately bounded lexical paraphrase set without enabling embeddings.
+- Verified restart replay now preserves access heat and feedback only when the
+  governed memory version and content hash match the signed mutation journal.
+- Generic and Claude Code compatibility checkpoints stay bound to the MCP
+  continuity session, preserving evidence authority for explicit mutations.
 
 ### Validation scope
 
-The release adds 100 synthetic retrieval cases across ten query classes without
-shared fixture identifiers. These are targeted regression tests, not a claim of
-universal multilingual recall. The older ordinal-based fixtures remain useful
-for identifier retrieval and injected-alias plumbing; they do not establish
-shipped alias coverage or general paraphrase quality.
+The release passes the 200-case synthetic lexical corpus with Recall@1/5/10 and
+MRR@10 of 1.000, zero negative false positives, and zero policy leakage. Native
+hook, compact/full MCP, replay durability, race, package-install, and Harness
+relay tests are also included. These fixtures establish regression coverage,
+not universal semantic recall; embedding retrieval remains opt-in.
 
 ### Upgrade note
 
@@ -110,8 +116,9 @@ cd mindmory-mcp-*
 
 \`setup.sh\` generates fresh per-instance secrets, starts the daemon, and prints
 agent-specific Codex, Claude Code, DeepSeek Harness, and generic MCP guides
-(\`~/.dsh/profiles/web/cordis.patch.yml\` and \`headless\`). The tools appear as
-\`mcp__mindmory__*\` (memory_context, memory_search, memory_remember, ...).
+(\`~/.dsh/profiles/web/cordis.patch.yml\` and \`headless\`). The default compact
+profile exposes one \`mcp__mindmory__mindmory\` gateway; the legacy separate
+tool names require \`MINDMORY_MCP_PROFILE=full\`.
 
 ### Verify downloads
 

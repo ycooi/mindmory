@@ -129,6 +129,31 @@ func TestLowRAMExperimentLearnerUsesSQLite(t *testing.T) {
 	}
 }
 
+func TestLearnerRecognizesCapitalizedEnglishCue(t *testing.T) {
+	store := newTestStore(t)
+	principal := testPrincipal()
+	session, err := store.UpsertSession(context.Background(), principal, "ext-english-cue", "learner test", "test-agent", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := testMessage("m-english-cue", "Remember that Harness rollback uses the blue lantern marker.", time.Now().UTC())
+	if _, _, err := store.InsertMessage(context.Background(), session.SessionID, message); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tokens := map[string]config.MCPPrincipalConfig{
+		"test-client": {Token: config.MCPToken(strings.Repeat("t", 24)), Capabilities: []config.MCPClientCapability{config.MCPContextRead, config.MCPMemoryPropose}},
+	}
+	server := NewServer(store, "owner", strings.Repeat("k", 32), "admin-token", tokens, log, true)
+	summary, err := server.LearnerExtract(context.Background(), server.LearnerPrincipal(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Applied != 1 || summary.Failed != 0 {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
 func TestAdminLearnerExtractEndpoint(t *testing.T) {
 	server, _ := newLearnerFixture(t)
 	request := httptest.NewRequest(http.MethodPost, "/v1/admin/learner/extract", nil)

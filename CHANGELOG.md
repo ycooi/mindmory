@@ -3,6 +3,70 @@
 All notable changes to Mindmory are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-09-22
+
+### Changed
+
+- Add zero-schema Codex and DeepSeek Harness native paths. `UserPromptSubmit` now checkpoints the
+  prompt under its real Codex session/project, requests strict relevance, and
+  injects at most three memories in a 320-character, 80-estimated-token
+  plain-text packet. `Stop`
+  checkpoints the assistant response without adding model context.
+- Reject weak heat-dominated fuzzy matches from automatic native injection;
+  explicit search remains available for broader discovery. Native relevance
+  does not warm activation or expose IDs, scores, provenance, or wire JSON.
+- Make MCP optional for Codex and document `mcp_servers.mindmory.enabled=false`
+  as the zero-fixed-token configuration. The compact MCP gateway remains the
+  compatibility path for other hosts; evidence-backed mutations require its
+  checkpoint adapter and static bridge to share the same bound session.
+- Replace DeepSeek Harness's MCP, eager session reflex, separate relevance, and
+  checkpoint-only rows with one native Cordis relay. It injects the same strict
+  320-character/80-estimated-token packet, records it in Harness history,
+  archives assembled replies, and scrubs credential-like child environment
+  variables.
+- Normalize passive-learner intent cues before matching so capitalized English
+  statements such as `Remember that ...` follow the same governed path as
+  lowercase and CJK cues.
+- Make the token-efficient `compact` MCP profile the default: one `mindmory`
+  gateway advertises all existing operations through `action` and `args`.
+  Set `MINDMORY_MCP_PROFILE=full` only for compatibility with clients that
+  require the former thirteen separate tool names.
+- Stop instructing agents to fetch a context packet at every session start.
+  Retrieval is now on demand, and callers are told to keep `limit` and
+  `max_chars` small.
+- Bound compact-profile payload defaults to four search hits, 1,200 context
+  characters, ten list/journal rows, and 2,000 artifact characters. Larger
+  reads remain available only through an explicit caller override.
+- Recognize a narrowly bounded natural-language allocation paraphrase in
+  strict automatic relevance without enabling semantic embeddings or broad
+  thesaurus expansion.
+
+### Fixed
+
+- Preserve access heat, last-use sequence, and feedback state when the signed
+  mutation journal rebuilds a matching governed memory version at startup.
+  Runtime state from stale or governed-content-mismatched projections remains
+  rejected.
+- Ignore malformed DeepSeek Harness event timestamps instead of allowing an
+  invalid date to throw inside the relay callback.
+- Keep generic and Claude Code compatibility checkpoints on the unscoped
+  session bound to the MCP bridge, preventing host `cwd` metadata from breaking
+  evidence-backed mutation authority. Native hooks retain their real project
+  and per-host session isolation.
+
+### Validation
+
+- Add Codex and DeepSeek Harness native-hook functional tests for relevant, irrelevant, failed, assistant,
+  Unicode, bounded-output, and 100-turn synthetic workloads, plus strict-match
+  filtering tests and checkpoint-versus-native benchmarks.
+- Add a fixed schema-size budget for the compact profile and verify that the
+  full compatibility profile remains available with unchanged operation
+  semantics and server-injected mutation authority.
+- Add compact-versus-full dispatch benchmarks for memory search and context
+  calls so the gateway's latency and allocation overhead remain measurable.
+- Add repeated verified-restart coverage for runtime ranking and feedback
+  durability, including rejection of heat copied from a mismatched projection.
+
 ## [0.2.1] - 2026-09-11
 
 ### Fixed

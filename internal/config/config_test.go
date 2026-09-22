@@ -48,8 +48,17 @@ func TestLoadMCPServerRequiresBoundSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.LogLevel != "WARN" || config.BoundMessageID != "" {
+	if config.LogLevel != "WARN" || config.BoundMessageID != "" || config.Profile != "compact" {
 		t.Fatalf("config=%+v", config)
+	}
+	values["MINDMORY_MCP_PROFILE"] = "full"
+	config, err = LoadMCPServer(mapLookup(values))
+	if err != nil || config.Profile != "full" {
+		t.Fatalf("full profile config=%+v err=%v", config, err)
+	}
+	values["MINDMORY_MCP_PROFILE"] = "wide"
+	if _, err = LoadMCPServer(mapLookup(values)); err == nil {
+		t.Fatal("expected invalid MCP profile to fail")
 	}
 }
 

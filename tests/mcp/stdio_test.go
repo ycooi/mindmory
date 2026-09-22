@@ -16,18 +16,25 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"mindmory.local/core/internal/retrieval"
 )
 
 func TestRealStdioListsToolsAndBindsMutationAuthority(t *testing.T) {
 	var mu sync.Mutex
 	var mutation map[string]any
+	var contextRequest map[string]any
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && len(r.URL.Path) > 20:
 			_, _ = w.Write([]byte(`{"session":{"session_id":"00000000-0000-4000-8000-000000000601","project_key":"Mindmory"},"message_id":"00000000-0000-4000-8000-000000000631","is_current_user":true}`))
 		case r.URL.Path == "/v1/context/packet":
+			mu.Lock()
+			_ = json.NewDecoder(r.Body).Decode(&contextRequest)
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"session":{"session_id":"00000000-0000-4000-8000-000000000601","project_key":"Mindmory"},"continuity_cursor":"opaque","memories":[],"truncated":false,"returned_chars":0}`))
+		case r.URL.Path == "/v1/context/search":
+			_, _ = w.Write([]byte(`{"results":[{"memory_id":"memory-0001","subject":"Deployment policy","content":"Use a reviewed release checklist before deployment.","score":0.91,"scope":"PROJECT"},{"memory_id":"memory-0002","subject":"Rollback rule","content":"Keep the previous verified artifact available for rollback.","score":0.84,"scope":"PROJECT"},{"memory_id":"memory-0003","subject":"Testing preference","content":"Run broad regression coverage before reporting a material fix.","score":0.78,"scope":"GLOBAL"},{"memory_id":"memory-0004","subject":"Publication boundary","content":"Do not publish until the user explicitly requests publication.","score":0.72,"scope":"GLOBAL"}]}`))
 		case r.URL.Path == "/v1/memory/mutations":
 			mu.Lock()
 			_ = json.NewDecoder(r.Body).Decode(&mutation)
@@ -90,30 +97,106 @@ func TestRealStdioListsToolsAndBindsMutationAuthority(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	// Mirror the authoritative mcpserver inventory to keep the wire contract
-	// honest, including the sanitized read-only startup/configuration status.
-	want := []string{"artifact_read", "artifact_search", "memory_context", "memory_correct", "memory_diff", "memory_feedback", "memory_forget", "memory_recall", "memory_remember", "memory_search", "mindmory_status", "ops_recent", "proposal_review"}
-	if len(names) != len(want) {
-		t.Fatalf("tools=%v (want %d, got %d)", names, len(want), len(names))
+	if len(names) != 1 || names[0] != "mindmory" {
+		t.Fatalf("compact tools=%v", names)
 	}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Fatalf("tools=%v (want %v)", names, want)
-		}
+	schema, err := json.Marshal(listed.Tools)
+	if err != nil {
+		t.Fatal(err)
 	}
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "memory_context", Arguments: map[string]any{"query": "MCP"}})
+	if len(schema) > 1500 {
+		t.Fatalf("compact tool schema is %d bytes; budget is 1500", len(schema))
+	}
+	fixedMetadataBytes := len(schema) + len(session.InitializeResult().Instructions)
+	if fixedMetadataBytes > 1024 {
+		t.Fatalf("compact fixed MCP metadata is %d bytes; budget is 1024", fixedMetadataBytes)
+	}
+	fixedMetadataTokens := retrieval.EstimatedTokens(string(schema) + session.InitializeResult().Instructions)
+	if fixedMetadataTokens > 256 {
+		t.Fatalf("compact fixed MCP metadata is %d estimated tokens; budget is 256", fixedMetadataTokens)
+	}
+	if strings.Contains(strings.ToLower(session.InitializeResult().Instructions), "beginning of each conversation") {
+		t.Fatalf("MCP instructions still request an eager context call: %q", session.InitializeResult().Instructions)
+	}
+	help, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "mindmory", Arguments: map[string]any{"action": "help", "args": map[string]any{"action": "memory_search"}}})
+	if err != nil || help.IsError {
+		t.Fatalf("help result=%+v err=%v", help, err)
+	}
+	helpJSON, _ := json.Marshal(help.StructuredContent)
+	if !strings.Contains(string(helpJSON), "query") || !strings.Contains(string(helpJSON), "limit") {
+		t.Fatalf("memory_search help=%s", helpJSON)
+	}
+	search, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "mindmory", Arguments: map[string]any{"action": "memory_search", "args": map[string]any{"query": "release policy", "limit": 4}}})
+	if err != nil || search.IsError {
+		t.Fatalf("search result=%+v err=%v", search, err)
+	}
+	structured, _ := json.Marshal(search.StructuredContent)
+	content, _ := json.Marshal(search.Content)
+	wire, _ := json.Marshal(search)
+	gatewayRequest := `{"action":"memory_search","args":{"query":"release policy","limit":4}}`
+	directQuery := "release policy"
+	directText := "Deployment policy: Use a reviewed release checklist before deployment.\n" +
+		"Rollback rule: Keep the previous verified artifact available for rollback.\n" +
+		"Testing preference: Run broad regression coverage before reporting a material fix.\n" +
+		"Publication boundary: Do not publish until the user explicitly requests publication."
+	if tokens := retrieval.EstimatedTokens(string(structured)); tokens > 300 {
+		t.Fatalf("four-hit structured search result is %d estimated tokens; budget is 300", tokens)
+	}
+	t.Logf("four-hit search bytes/tokens: structured=%d/%d content=%d/%d full_wire=%d/%d", len(structured), retrieval.EstimatedTokens(string(structured)), len(content), retrieval.EstimatedTokens(string(content)), len(wire), retrieval.EstimatedTokens(string(wire)))
+	t.Logf("search request/result comparison tokens: gateway_request=%d direct_query=%d direct_text=%d", retrieval.EstimatedTokens(gatewayRequest), retrieval.EstimatedTokens(directQuery), retrieval.EstimatedTokens(directText))
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "mindmory", Arguments: map[string]any{"action": "memory_context", "args": map[string]any{"query": "MCP"}}})
 	if err != nil || result.IsError {
 		t.Fatalf("context result=%+v err=%v", result, err)
 	}
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "memory_forget", Arguments: map[string]any{"target_memory_id": "m1", "evidence_quote": "forget it"}})
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "mindmory", Arguments: map[string]any{"action": "memory_forget", "args": map[string]any{"target_memory_id": "m1", "evidence_quote": "forget it"}}})
 	if err != nil || result.IsError {
 		t.Fatalf("forget result=%+v err=%v", result, err)
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	if mutation["session_id"] != "00000000-0000-4000-8000-000000000601" || mutation["message_id"] != "00000000-0000-4000-8000-000000000631" {
+	mutationSession, mutationMessage := mutation["session_id"], mutation["message_id"]
+	contextMaxChars := contextRequest["max_chars"]
+	mu.Unlock()
+	if mutationSession != "00000000-0000-4000-8000-000000000601" || mutationMessage != "00000000-0000-4000-8000-000000000631" {
 		t.Fatalf("authority not server injected: %+v", mutation)
 	}
+	if contextMaxChars != float64(1200) {
+		t.Fatalf("compact context request=%+v; want max_chars=1200", contextRequest)
+	}
+	smuggled, smuggleErr := session.CallTool(ctx, &mcp.CallToolParams{Name: "mindmory", Arguments: map[string]any{"action": "memory_forget", "args": map[string]any{"target_memory_id": "m1", "evidence_quote": "forget it", "session_id": "attacker"}}})
+	if smuggleErr == nil && (smuggled == nil || !smuggled.IsError) {
+		t.Fatalf("compact gateway accepted an unknown authority field: %+v", smuggled)
+	}
+
+	// The legacy thirteen-tool contract remains available only when a host
+	// explicitly opts into its higher per-session schema cost.
+	fullCommand := exec.Command(binary)
+	fullCommand.Env = []string{"MINDMORY_MCP_PROFILE=full"}
+	fullSession, err := client.Connect(ctx, &mcp.CommandTransport{Command: fullCommand}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fullSession.Close()
+	fullList, err := fullSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullNames := make([]string, 0, len(fullList.Tools))
+	for _, tool := range fullList.Tools {
+		fullNames = append(fullNames, tool.Name)
+	}
+	sort.Strings(fullNames)
+	wantFull := []string{"artifact_read", "artifact_search", "memory_context", "memory_correct", "memory_diff", "memory_feedback", "memory_forget", "memory_recall", "memory_remember", "memory_search", "mindmory_status", "ops_recent", "proposal_review"}
+	if strings.Join(fullNames, ",") != strings.Join(wantFull, ",") {
+		t.Fatalf("full tools=%v (want %v)", fullNames, wantFull)
+	}
+	fullSchema, err := json.Marshal(fullList.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fullSchema) < len(schema)*4 {
+		t.Fatalf("compact schema reduction too small: compact=%d full=%d", len(schema), len(fullSchema))
+	}
+	t.Logf("MCP metadata: compact_schema=%dB compact_fixed=%dB/%d estimated tokens full_schema=%dB schema_reduction=%.1f%%", len(schema), fixedMetadataBytes, fixedMetadataTokens, len(fullSchema), 100*(1-float64(len(schema))/float64(len(fullSchema))))
 }
 
 func TestUnconfiguredStdioStartsRestrictedBootstrapServer(t *testing.T) {

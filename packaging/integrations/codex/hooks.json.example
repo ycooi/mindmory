@@ -1,5 +1,5 @@
 {
-  "description": "Checkpoint each Codex user prompt and completed assistant response into local Mindmory",
+  "description": "Inject bounded local Mindmory context without MCP and checkpoint completed Codex turns",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -8,7 +8,8 @@
             "type": "command",
             "command": "/ABSOLUTE/PATH/integrations/checkpoint-hook.sh codex",
             "timeout": 10,
-            "statusMessage": "Checkpointing prompt to local Mindmory"
+            "statusMessage": "Loading bounded local memory",
+            "additionalContextLimit": 160
           }
         ]
       }
@@ -19,6 +20,7 @@
           {
             "type": "command",
             "command": "/ABSOLUTE/PATH/integrations/checkpoint-hook.sh codex",
+            "async": true,
             "timeout": 10,
             "statusMessage": "Checkpointing assistant response to local Mindmory"
           }

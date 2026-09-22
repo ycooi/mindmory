@@ -1,5 +1,5 @@
 #!/bin/sh
-# Mindmory MCP (lite) — first-run initialization sequence.
+# Mindmory (lite) — first-run initialization sequence.
 #
 # Generates fresh, per-instance secrets, writes ./mindmory-config.sh (mode 600), starts the
 # single-process lite daemon (no Docker, no PostgreSQL), waits until it
@@ -17,6 +17,7 @@
 #   ./setup.sh --http-port 58080     port for the daemon (default 58080)
 #   ./setup.sh --reset               overwrite an existing config
 #   ./setup.sh --skip-start          generate config only; you start the daemon
+#   ./setup.sh --agent --complete-native agent-safe native-hook setup; emits JSON without secrets
 #   ./setup.sh --agent --complete-mcp agent-safe setup/repair; emits JSON without secrets
 #   ./setup.sh --help                show this help
 
@@ -32,6 +33,7 @@ RESET=0
 SKIP_START=0
 AGENT=0
 COMPLETE_MCP=0
+COMPLETE_NATIVE=0
 
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -46,6 +48,7 @@ while [ "$#" -gt 0 ]; do
     --reset)         RESET=1; shift ;;
     --skip-start)    SKIP_START=1; shift ;;
     --agent)         AGENT=1; shift ;;
+    --complete-native) COMPLETE_NATIVE=1; AGENT=1; shift ;;
     --complete-mcp)  COMPLETE_MCP=1; AGENT=1; shift ;;
     --help|-h)       usage ;;
     *) echo "error: unknown option: $1" >&2; usage ;;
@@ -104,7 +107,7 @@ esac
 # Agent completion is idempotent: reuse an existing protected configuration
 # instead of rotating secrets or overwriting memory identity.
 EXISTING_CONFIG=0
-if [ "$COMPLETE_MCP" -eq 1 ] && [ -f mindmory-config.sh ]; then
+if { [ "$COMPLETE_MCP" -eq 1 ] || [ "$COMPLETE_NATIVE" -eq 1 ]; } && [ -f mindmory-config.sh ]; then
   set -a
   . ./mindmory-config.sh
   set +a
@@ -204,11 +207,16 @@ MINDMORY_ADMIN_TOKEN=$ADMIN_TOKEN
 MINDMORY_MCP_CLIENT_TOKENS_JSON='$MCP_CLIENT_TOKENS_JSON'
 MINDMORY_LOCAL_CLIENT_KEY=local-agent
 
-# --- MCP stdio server (runs on the host, launched by your assistant) --------
+# --- Native hook and optional MCP stdio server -------------------------------
 # MINDMORY_MCP_TOKEN must equal the token inside MINDMORY_MCP_CLIENT_TOKENS_JSON.
+# The native Codex hook uses this local client credential without registering
+# an MCP server or exposing it to model context.
 MINDMORY_ENDPOINT=http://127.0.0.1:$HTTP_PORT
 MINDMORY_MCP_TOKEN=$CLIENT_TOKEN
 MINDMORY_MCP_LOG_LEVEL=INFO
+# compact (default) advertises one gateway tool; full preserves the legacy
+# thirteen-tool surface at a materially higher per-session schema cost.
+MINDMORY_MCP_PROFILE=compact
 EOF
 chmod 600 mindmory-config.sh
 say "mindmory-config.sh written (chmod 600) with fresh secrets for owner '$OWNER'"
@@ -269,7 +277,7 @@ fi
 #     re-running setup.sh reuses the same external id.
 # --------------------------------------------------------------------------
 BOUND_SESSION_ID="${MINDMORY_BOUND_SESSION_ID:-}"
-if [ -z "$BOUND_SESSION_ID" ] && [ "$ready" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+if [ "$COMPLETE_NATIVE" -eq 0 ] && [ -z "$BOUND_SESSION_ID" ] && [ "$ready" -eq 1 ] && command -v curl >/dev/null 2>&1; then
   say "creating the initial continuity session"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   resp="$(curl -fsS -X POST "http://127.0.0.1:$HTTP_PORT/v1/checkpoints" \
@@ -284,18 +292,28 @@ if [ -z "$BOUND_SESSION_ID" ] && [ "$ready" -eq 1 ] && command -v curl >/dev/nul
     warn "could not create the initial session — set MINDMORY_BOUND_SESSION_ID manually (see dsh/README.md)"
   fi
 fi
-if [ -z "$BOUND_SESSION_ID" ]; then
+if [ "$COMPLETE_NATIVE" -eq 0 ] && [ -z "$BOUND_SESSION_ID" ]; then
   BOUND_SESSION_ID="<SESSION-ID-FROM-SETUP>"
 fi
 
 if [ "$AGENT" -eq 1 ]; then
   state="ACTION_REQUIRED"
-  [ "$ready" -eq 1 ] && [ "$BOUND_SESSION_ID" != "<SESSION-ID-FROM-SETUP>" ] && state="READY"
+  if [ "$COMPLETE_NATIVE" -eq 1 ]; then
+    [ "$ready" -eq 1 ] && state="READY"
+  else
+    [ "$ready" -eq 1 ] && [ "$BOUND_SESSION_ID" != "<SESSION-ID-FROM-SETUP>" ] && state="READY"
+  fi
   config_path="$PWD/mindmory-config.sh"
   command_path="$PWD/bin/mindmory-mcp-stdio"
+  hook_path="$PWD/integrations/checkpoint-hook.sh"
   credentials_created=true
   [ "$EXISTING_CONFIG" -eq 1 ] && credentials_created=false
   json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+  if [ "$COMPLETE_NATIVE" -eq 1 ]; then
+    printf '{"state":"%s","hook_command":"%s codex","config_file":"%s","credentials_created":%s,"credentials_rotated":false,"secrets_exposed":false,"mcp_required":false,"restart_codex":true}\n' \
+      "$state" "$(json_escape "$hook_path")" "$(json_escape "$config_path")" "$credentials_created"
+    exit 0
+  fi
   printf '{"state":"%s","mcp_command":"%s","config_file":"%s","credentials_created":%s,"credentials_rotated":false,"secrets_exposed":false,"restart_mcp":true}\n' \
     "$state" "$(json_escape "$command_path")" "$(json_escape "$config_path")" "$credentials_created"
   exit 0
@@ -307,7 +325,7 @@ fi
 cat <<EOF
 
 ============================================================
- Mindmory MCP (lite) is up — your memories live on this machine only
+ Mindmory (lite) is up — your memories live on this machine only
 ============================================================
   endpoint : http://127.0.0.1:$HTTP_PORT
   owner    : $OWNER
@@ -317,7 +335,7 @@ cat <<EOF
 
 Choose the agent integration
 ----------------------------
-Codex:       integrations/codex/README.md
+Codex native: integrations/codex/README.md  (zero MCP schema)
 Claude Code: integrations/claude-code/README.md
 Other MCP:   integrations/generic/README.md
 DeepSeek:    dsh/README.md
@@ -330,24 +348,17 @@ Append this block to BOTH:
 then restart the harness (or start a new session):
 
 - insert:
-    - id: mcp-mindmory
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: mindmory
-        transport: stdio
-        command: $PWD/bin/mindmory-mcp-stdio
-        # No token is placed in the agent profile. The bridge securely reads
-        # $PWD/mindmory-config.sh beside the distribution.
-
-- insert:
-    - id: mindmory-checkpoint-relay
+    - id: mindmory-native-relay
       name: $PWD/dsh/checkpoint-relay.mjs
-      # Archives exact direct-user and assembled assistant messages through
-      # the credential-hiding local checkpoint adapter.
+      config:
+        maxChars: 320
+        timeoutMs: 10000
 
-The tools then appear as mcp__mindmory__* (memory_context, memory_remember,
-memory_search, ...). The relay archives both sides of every completed Harness
-turn. See dsh/README.md in this package for details and non-dsh clients.
+Remove or disable older mcp-mindmory, mindmory-reflex,
+mindmory-relevance, and mindmory-checkpoint-relay rows. The native relay adds
+no tool schema: it archives both sides, retrieves only strict prompt-relevant
+memory, and injects at most three memories in 320 characters (about 80 tokens).
+See dsh/README.md for migration and optional MCP compatibility.
 
 Make it permanent (optional, Linux)
 -----------------------------------
@@ -380,8 +391,9 @@ reboots, install the sample unit and enable it:
 
 Security notes
 --------------
-- The client token exists only in ./mindmory-config.sh. The MCP bridge reads
-  it internally; never paste it into an agent conversation or profile.
+- The client token exists only in ./mindmory-config.sh. Native hooks and the
+  optional MCP bridge read it internally; never paste it into a conversation
+  or profile.
 - ./mindmory-config.sh holds every secret for this instance — keep it safe; the daemon
   reads it only at startup.
 - The daemon listens on 127.0.0.1 only; nothing leaves your machine. Set

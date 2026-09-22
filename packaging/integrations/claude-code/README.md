@@ -33,15 +33,21 @@ at the end of the turn.
    user's Claude Code settings.
 
 5. Restart Claude Code. Use `/mcp` or `claude mcp list`, then call
-   `mindmory_status`. Installation succeeds only when its state is `READY`.
+   the `mindmory` tool with `action=mindmory_status`. Installation succeeds
+   only when its state is `READY`.
 
 ## Expected behavior
 
-The `UserPromptSubmit` hook sends the user's prompt and the `Stop` hook sends
+The default MCP profile exposes one compact `mindmory` gateway; use memory
+actions only when prior state may matter. The `UserPromptSubmit` hook sends
+the user's prompt and the `Stop` hook sends
 `last_assistant_message` with role `assistant`. Both operate through the
 loopback daemon and print neither conversation content nor credentials. Read
 tools work with MCP registration alone; evidence-backed mutations require the
-user-prompt checkpoint lifecycle.
+user-prompt checkpoint lifecycle. The adapter and MCP server deliberately use
+one shared, unscoped continuity session; a supplied project `cwd` does not
+change that binding. Do not combine a different session checkpoint path with
+this static bridge and expect mutation authority to carry across.
 
 This package targets Claude Code. Claude's hosted API MCP connector cannot
 launch this local stdio process without a separately operated remote gateway.

@@ -1,8 +1,10 @@
 #!/bin/sh
-# Shared UserPromptSubmit/Stop adapter for Codex and Claude Code.
+# Shared UserPromptSubmit/Stop adapter for Codex, DeepSeek Harness, and Claude Code.
 # Host event JSON is read from stdin. No conversation content or credential is
-# printed. UserPromptSubmit archives role=user; Stop archives the completed
-# last_assistant_message with the host identity.
+# printed to stderr. Codex and DeepSeek Harness use the native hook path:
+# UserPromptSubmit archives the prompt and returns a bounded relevance packet
+# directly as hook context; Stop archives the completed response. Other hosts
+# retain checkpoint-only behavior.
 set -eu
 
 HOST_NAME="${1:-generic}"
@@ -18,4 +20,11 @@ fi
 set -a
 . "$CONFIG_FILE"
 set +a
-exec "$DIST_DIR/bin/mindmoryctl" checkpoint-hook --host "$HOST_NAME"
+case "$HOST_NAME" in
+  codex|deepseek-harness)
+    exec "$DIST_DIR/bin/mindmoryctl" native-hook --host "$HOST_NAME" --max-chars 320 --max-memories 3
+    ;;
+  *)
+    exec "$DIST_DIR/bin/mindmoryctl" checkpoint-hook --host "$HOST_NAME"
+    ;;
+esac

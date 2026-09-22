@@ -3,6 +3,7 @@ package command
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mindmory.local/core/internal/retrieval"
 )
 
 func TestCheckpointHookArchivesHostPromptWithoutWritingResponse(t *testing.T) {
@@ -31,7 +34,7 @@ func TestCheckpointHookArchivesHostPromptWithoutWritingResponse(t *testing.T) {
 	if code := runCheckpointHook([]string{"--host", "codex"}, input); code != 0 {
 		t.Fatalf("code=%d", code)
 	}
-	if got.ExternalSessionID != "mindmory-continuity" || got.ProjectKey != "/project" || len(got.Messages) != 1 {
+	if got.ExternalSessionID != "mindmory-continuity" || got.ProjectKey != "" || len(got.Messages) != 1 {
 		t.Fatalf("unexpected checkpoint: %#v", got)
 	}
 	message := got.Messages[0]
@@ -118,6 +121,229 @@ func TestCheckpointHookPreservesHostTimestampAndDeepSeekIdentity(t *testing.T) {
 func TestCheckpointHookRejectsEmptyPrompt(t *testing.T) {
 	if code := runCheckpointHook(nil, bytes.NewBufferString(`{"session_id":"chat-1","prompt":""}`)); code != 1 {
 		t.Fatalf("code=%d", code)
+	}
+}
+
+func TestNativeHookArchivesAndInjectsOnlyBoundedPlainText(t *testing.T) {
+	const internalSessionID = "00000000-0000-4000-8000-000000000123"
+	var checkpoint hookCheckpointRequest
+	var relevance hookRelevanceRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/checkpoints":
+			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"session_id":"`+internalSessionID+`"}`)
+		case "/v1/context/relevance":
+			if err := json.NewDecoder(r.Body).Decode(&relevance); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"memories":[{"memory_id":"private-id","subject":"Rollback rule","content":"Keep the previous verified artifact available.","score":0.99}]}`)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	input := strings.NewReader(`{"session_id":"thread-1","turn_id":"turn-1","hook_event_name":"UserPromptSubmit","prompt":"what is the rollback rule?","cwd":"/project-a"}`)
+	var output bytes.Buffer
+	if code := runNativeHook([]string{"--host", "codex", "--max-chars", "120", "--max-memories", "2"}, input, &output); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.HasPrefix(checkpoint.ExternalSessionID, "codex:thread-1:") || checkpoint.ProjectKey != "/project-a" || checkpoint.Messages[0].Role != "user" {
+		t.Fatalf("checkpoint=%+v", checkpoint)
+	}
+	if relevance.SessionID != internalSessionID || relevance.Query != "what is the rollback rule?" || relevance.MaxChars != 120 || relevance.MaxMemories != 2 || !relevance.StrongOnly {
+		t.Fatalf("relevance=%+v", relevance)
+	}
+	var got codexHookOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.HookSpecificOutput == nil || got.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+		t.Fatalf("hook output=%s", output.String())
+	}
+	contextText := got.HookSpecificOutput.AdditionalContext
+	if !strings.Contains(contextText, "Rollback rule") || strings.Contains(contextText, "private-id") || strings.Contains(contextText, "0.99") {
+		t.Fatalf("unexpected model context: %q", contextText)
+	}
+	if count := len([]rune(contextText)); count > 120 {
+		t.Fatalf("context runes=%d exceeds budget: %q", count, contextText)
+	}
+	if tokens := retrieval.EstimatedTokens(contextText); tokens > 30 {
+		t.Fatalf("context estimated tokens=%d exceeds budget: %q", tokens, contextText)
+	}
+}
+
+func TestNativeHookUsesGenericEnvelopeForDeepSeekHarness(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/checkpoints":
+			_, _ = io.WriteString(w, `{"session_id":"00000000-0000-4000-8000-000000000123"}`)
+		case "/v1/context/relevance":
+			_, _ = io.WriteString(w, `{"memories":[{"memory_id":"hidden","subject":"Harness policy","content":"Keep native recall bounded."}]}`)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	input := strings.NewReader(`{"session_id":"harness-1","turn_id":"user-1","hook_event_name":"UserPromptSubmit","prompt":"What is the Harness policy?","cwd":"/project"}`)
+	var output bytes.Buffer
+	if code := runNativeHook([]string{"--host", "deepseek-harness"}, input, &output); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	var got nativeHookOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.AdditionalContext, "Harness policy") || strings.Contains(output.String(), "hidden") {
+		t.Fatalf("generic output=%q", output.String())
+	}
+	if strings.Contains(output.String(), "hookSpecificOutput") || strings.Contains(output.String(), "hookEventName") {
+		t.Fatalf("Codex envelope leaked into Harness output: %q", output.String())
+	}
+}
+
+func TestNativeSessionIdentitySeparatesProjectMoves(t *testing.T) {
+	event := hookInput{SessionID: "thread-1", CWD: "/project-a"}
+	first := nativeExternalSessionID("codex", event)
+	event.CWD = "/project-b"
+	second := nativeExternalSessionID("codex", event)
+	if first == second || !strings.HasPrefix(first, "codex:thread-1:") || !strings.HasPrefix(second, "codex:thread-1:") {
+		t.Fatalf("first=%q second=%q", first, second)
+	}
+	if got := nativeExternalSessionID("codex", hookInput{SessionID: "thread-1"}); got != "codex:thread-1" {
+		t.Fatalf("empty project identity=%q", got)
+	}
+}
+
+func TestNativeContextBoundsCJKByEnglishEquivalentTokenBudget(t *testing.T) {
+	memories := []hookMemory{{
+		Subject: strings.Repeat("长期偏好", 30),
+		Content: strings.Repeat("运行广泛回归测试后再确认修复", 30),
+	}}
+	contextText := formatNativeContext(memories, 320)
+	if contextText == "" {
+		t.Fatal("bounded CJK context was unexpectedly empty")
+	}
+	if runes := len([]rune(contextText)); runes > 320 {
+		t.Fatalf("runes=%d", runes)
+	}
+	if tokens := retrieval.EstimatedTokens(contextText); tokens > 80 {
+		t.Fatalf("estimated tokens=%d context=%q", tokens, contextText)
+	}
+}
+
+func TestNativeHookAddsNoContextForEmptyRelevance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/checkpoints" {
+			_, _ = io.WriteString(w, `{"session_id":"00000000-0000-4000-8000-000000000123"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"memories":[]}`)
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	var output bytes.Buffer
+	input := strings.NewReader(`{"session_id":"thread-2","turn_id":"turn-1","hook_event_name":"UserPromptSubmit","prompt":"unrelated query","cwd":"/project"}`)
+	if code := runNativeHook(nil, input, &output); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if strings.TrimSpace(output.String()) != "{}" {
+		t.Fatalf("empty lookup injected output: %q", output.String())
+	}
+}
+
+func TestNativeHookStopArchivesWithoutRetrieval(t *testing.T) {
+	relevanceCalls := 0
+	var checkpoint hookCheckpointRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/context/relevance" {
+			relevanceCalls++
+		}
+		_ = json.NewDecoder(r.Body).Decode(&checkpoint)
+		_, _ = io.WriteString(w, `{"session_id":"00000000-0000-4000-8000-000000000123"}`)
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	var output bytes.Buffer
+	input := strings.NewReader(`{"session_id":"thread-3","turn_id":"turn-1","hook_event_name":"Stop","last_assistant_message":"Done.","cwd":"/project"}`)
+	if code := runNativeHook(nil, input, &output); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if relevanceCalls != 0 || checkpoint.Messages[0].Role != "assistant" || checkpoint.Messages[0].AssistantName != "Codex" {
+		t.Fatalf("relevance=%d checkpoint=%+v", relevanceCalls, checkpoint)
+	}
+	if strings.TrimSpace(output.String()) != "{}" {
+		t.Fatalf("stop output=%q", output.String())
+	}
+}
+
+func TestNativeHookRetrievalFailureFailsOpenAfterCheckpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/checkpoints" {
+			_, _ = io.WriteString(w, `{"session_id":"00000000-0000-4000-8000-000000000123"}`)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"internal"}`)
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	var output bytes.Buffer
+	input := strings.NewReader(`{"session_id":"thread-4","turn_id":"turn-1","hook_event_name":"UserPromptSubmit","prompt":"query","cwd":"/project"}`)
+	if code := runNativeHook(nil, input, &output); code != 0 || strings.TrimSpace(output.String()) != "{}" {
+		t.Fatalf("code=%d output=%q", code, output.String())
+	}
+}
+
+func TestNativeHookHundredSyntheticTurnsStayWithinBudget(t *testing.T) {
+	var checkpointCalls, relevanceCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/checkpoints":
+			checkpointCalls++
+			_, _ = io.WriteString(w, `{"session_id":"00000000-0000-4000-8000-000000000123"}`)
+		case "/v1/context/relevance":
+			relevanceCalls++
+			_, _ = io.WriteString(w, `{"memories":[{"memory_id":"hidden","subject":"测试偏好","content":"运行广泛回归测试后再确认修复。"}]}`)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MINDMORY_ENDPOINT", server.URL)
+	t.Setenv("MINDMORY_MCP_TOKEN", "client-token-at-least-24-characters")
+	for i := 0; i < 100; i++ {
+		input := strings.NewReader(fmt.Sprintf(`{"session_id":"thread-load","turn_id":"turn-%d","hook_event_name":"UserPromptSubmit","prompt":"test %d","cwd":"/project"}`, i, i))
+		var output bytes.Buffer
+		if code := runNativeHook([]string{"--max-chars", "96"}, input, &output); code != 0 {
+			t.Fatalf("turn %d code=%d", i, code)
+		}
+		var got codexHookOutput
+		if err := json.Unmarshal(output.Bytes(), &got); err != nil || got.HookSpecificOutput == nil {
+			t.Fatalf("turn %d output=%q err=%v", i, output.String(), err)
+		}
+		if n := len([]rune(got.HookSpecificOutput.AdditionalContext)); n > 96 {
+			t.Fatalf("turn %d context runes=%d", i, n)
+		}
+		if strings.Contains(output.String(), "hidden") {
+			t.Fatalf("turn %d leaked metadata: %s", i, output.String())
+		}
+	}
+	if checkpointCalls != 100 || relevanceCalls != 100 {
+		t.Fatalf("checkpoint=%d relevance=%d", checkpointCalls, relevanceCalls)
 	}
 }
 
