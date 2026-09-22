@@ -405,7 +405,7 @@ func containsCJK(value string) bool {
 // HasCue reports whether value carries an explicit durable-intent cue for the
 // given mutation kind. Exported for the passive learner; the authoritative
 // cue/exclusion rule set stays here in one place.
-func HasCue(kind MutationKind, value string) bool { return hasCue(kind, value) }
+func HasCue(kind MutationKind, value string) bool { return hasCue(kind, strings.ToLower(value)) }
 
 // SubjectOverlaps reports whether a candidate subject is grounded in the
 // evidence text (the learner derives subjects from the message itself, so

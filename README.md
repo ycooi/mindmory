@@ -74,7 +74,7 @@ flowchart LR
     B --> D["Optional vector index"]
     C --> E["Policy-filtered retrieval"]
     D --> E
-    E --> F["AI assistants through MCP"]
+    E --> F["AI assistants through native hooks or optional MCP"]
 ```
 
 - **Portable by design.** Human-readable JSONL is canonical and remains usable
@@ -89,7 +89,7 @@ flowchart LR
 - **Correctable history.** New records supersede outdated memories without
   erasing the evidence or the history of the change.
 - **Model-independent.** The same memory can serve Codex, Claude Code, DSH, and
-  other MCP-capable assistants.
+  other assistants through native hooks or optional MCP.
 
 ## Why “Lite”
 
@@ -99,7 +99,7 @@ embeddings. It requires no Docker, PostgreSQL, hosted vector database, or local
 LLM. The result is a memory service that can be inspected, backed up, moved,
 repaired, and understood by the person who owns it.
 
-Current release: **0.2.0** (2026-09-09)<br>
+Current release: **0.2.2** (2026-09-22)<br>
 Author: **OOI YC** · Organization: **KELE Research**
 
 ## What ships
@@ -114,13 +114,14 @@ Author: **OOI YC** · Organization: **KELE Research**
 The daemon exposes evidence-backed memory search, recall, context packets,
 explicit remember/correct/forget proposals, feedback, operational status, and
 startup incident reporting. MCP callers can read sanitized configuration and
-statistics through `mindmory_status`; secrets and memory content are excluded.
+statistics through the compact gateway's `mindmory_status` action; secrets and
+memory content are excluded.
 
 ## Requirements
 
 - Go 1.26.6 or newer to build from source
 - macOS or Linux for the supplied release targets
-- An MCP-capable client
+- A supported native-hook client or an MCP-capable client
 
 No Docker is used by the build, tests, or runtime.
 
@@ -220,7 +221,7 @@ canonical memory archive.
 When provider, model, digest, dimensions, or embedding format changes, startup
 detects the mismatch, disables semantic retrieval, and reports an actionable
 incident through logs and MCP. Canonical memory remains usable. Follow the
-incident-bound instructions shown by `mindmory_status`, for example:
+incident-bound instructions shown by the `mindmory_status` action, for example:
 
 ```bash
 export MINDMORY_ADMIN_ENDPOINT=http://127.0.0.1:58080
@@ -240,30 +241,57 @@ WAL readers continue using the current generation, and the verified index is
 committed atomically. Once committed, new searches use it immediately; the
 daemon does not need another restart just to activate the rebuilt index.
 
-## MCP setup
+## Native Codex setup (recommended)
 
-For a packaged installation, run the agent-safe setup and register only the
-stdio command in your MCP client:
+Codex can use Mindmory without registering any MCP server. The bundled
+`UserPromptSubmit` hook archives the prompt, performs strict local retrieval,
+and injects only a bounded plain-text packet. The `Stop` hook archives the
+assistant response. Sessions that receive no relevant memory pay zero
+Mindmory context tokens.
+
+```bash
+./setup.sh --agent --complete-native
+```
+
+Install `integrations/codex/hooks.json.example` in the approved Codex config
+layer and replace `/ABSOLUTE/PATH`. The hook returns at most three memories in
+a 320-character packet with an additional 80-estimated-token ceiling, rejects weak heat-dominated matches, includes no IDs,
+scores, or provenance metadata, and uses no model-visible tool call. Disable
+an older registration with `mcp_servers.mindmory.enabled=false`.
+
+## Optional MCP compatibility
+
+Hosts that need the MCP compatibility surface can still run:
 
 ```bash
 ./setup.sh --agent --complete-mcp
 ```
 
 The bridge discovers the protected `mindmory-config.sh` beside the package, so
-tokens do not need to appear in agent configuration. If setup is missing or
-invalid, the MCP process still connects in restricted bootstrap mode with only
-`mindmory_status`; discovery or the first call returns a copy-and-paste setup
-command and quarantines ordinary memory tools. Credentials are never returned
-through MCP.
+tokens do not need to appear in agent configuration. Credentials are never
+returned through MCP.
+
+The default `compact` profile advertises one `mindmory` gateway instead of
+thirteen separate tools, materially reducing the schema carried by every
+agent session. Calls use `{"action":"memory_search","args":{...}}` (and the
+same action names as the legacy tools). Retrieval is on demand; Mindmory no
+longer asks the host to fetch context at session start. Set
+`MINDMORY_MCP_PROFILE=full` only when an older client requires separate tool
+names. The compact gateway's `help` action loads an operation's argument
+contract only when needed.
 
 Release archives also include `integrations/codex/`,
-`integrations/claude-code/`, and `integrations/generic/`. Codex and Claude Code
-packages include `UserPromptSubmit` and `Stop` checkpoint hooks. The former
-binds evidence-backed mutations to the exact current prompt; the latter stores
-the completed assistant response so conversation history includes both roles.
-The DeepSeek Harness package includes an equivalent local lifecycle relay over
-its canonical `user/message` and assembled `assistant/message` events; it does
-not archive partial streaming chunks or synthetic context injections.
+`integrations/claude-code/`, and `integrations/generic/`. Codex uses its hooks
+for direct retrieval and two-sided checkpointing. Claude Code uses the same
+adapter for checkpointing while retaining MCP for explicit retrieval and
+mutation tools. Its adapter and MCP bridge share one unscoped continuity
+session so evidence can be validated. Native Codex and DeepSeek Harness
+sessions are separate: merely enabling their optional MCP bridge supports read
+operations but does not transfer current-turn mutation authority.
+The DeepSeek Harness package includes an equivalent zero-schema relay. It
+retrieves at `agent/pre-step`, records the sourced recall message in Harness's
+canonical log, and archives assembled `assistant/message` events. It does not
+archive partial streaming chunks or synthetic context injections.
 
 ## Documentation and project policy
 

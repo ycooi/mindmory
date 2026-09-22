@@ -13,6 +13,7 @@ import (
 
 	"mindmory.local/core/internal/config"
 	domain "mindmory.local/core/internal/memory"
+	"mindmory.local/core/internal/retrieval"
 )
 
 // newRelevanceFixture builds an isolated store with one session and three
@@ -43,6 +44,24 @@ func newRelevanceFixture(t *testing.T) (*Server, *Store) {
 			Content: "气泡水秘密配方", ContentHash: hashContent("气泡水秘密配方"),
 			Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 0.8,
 			Importance: 0.5, Sensitivity: "SECRET", ScopeType: "GLOBAL", Activation: 0.5,
+		},
+		{
+			MemoryID: "rel-4", Kind: string(domain.KindUserPreference), Subject: "Daemon preference",
+			Content: "Keep the daemon available for local operations", ContentHash: hashContent("Keep the daemon available for local operations"),
+			Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 1.0,
+			Importance: 1.0, Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: 1.0,
+		},
+		{
+			MemoryID: "rel-5", Kind: string(domain.KindDocumentFact), Subject: "Deployment rollback checklist procedure",
+			Content: "Keep the verified artifact available for deployment rollback", ContentHash: hashContent("Keep the verified artifact available for deployment rollback"),
+			Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 0.9,
+			Importance: 0.6, Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: 0.6,
+		},
+		{
+			MemoryID: "rel-6", Kind: string(domain.KindUserPreference), Subject: "emergency savings",
+			Content: "Keep emergency money in an insured savings account", ContentHash: hashContent("Keep emergency money in an insured savings account"),
+			Lifecycle: "ACTIVE", EpistemicStatus: "USER_ACCEPTED", Confidence: 1.0,
+			Importance: 0.6, Sensitivity: "NORMAL", ScopeType: "GLOBAL", Activation: 0.8,
 		},
 	}
 	for _, m := range memories {
@@ -146,7 +165,7 @@ func TestRelevanceValidation(t *testing.T) {
 	for _, bad := range []relevanceRequest{
 		{SessionID: "", Query: "气泡水"},                                  // no session
 		{SessionID: "not-a-uuid", Query: "气泡水"},                        // bad session
-		{SessionID: "01a040e1-72c6-71e3-bca7-ce4ceee2f44b", Query: ""}, // no query
+		{SessionID: "00000000-0000-4000-8000-000000000123", Query: ""}, // no query
 	} {
 		body, _ := json.Marshal(bad)
 		request := httptest.NewRequest(http.MethodPost, "/v1/context/relevance", strings.NewReader(string(body)))
@@ -157,6 +176,124 @@ func TestRelevanceValidation(t *testing.T) {
 			t.Errorf("request %+v: status = %d, want 400", bad, recorder.Code)
 		}
 	}
+}
+
+func TestRelevanceStrongOnlyRejectsHeatDominatedWeakMatch(t *testing.T) {
+	server, store := newRelevanceFixture(t)
+	session := firstSessionID(t, store)
+	body, _ := json.Marshal(relevanceRequest{
+		SessionID: session, Query: "quartz orchestration governance daemon deploy", MaxChars: 500,
+		MaxMemories: 5, StrongOnly: true,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/context/relevance", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var out relevanceResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, memory := range out.Memories {
+		if memory.MemoryID == "rel-4" {
+			t.Fatalf("weak hot memory passed strict injection: %+v", memory)
+		}
+	}
+}
+
+func TestRelevanceStrongOnlyKeepsHighCoverageFuzzyMatch(t *testing.T) {
+	server, store := newRelevanceFixture(t)
+	session := firstSessionID(t, store)
+	body, _ := json.Marshal(relevanceRequest{
+		SessionID: session, Query: "deployment procedure rollback", MaxChars: 500,
+		MaxMemories: 5, StrongOnly: true,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/context/relevance", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var out relevanceResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, memory := range out.Memories {
+		if memory.MemoryID == "rel-5" {
+			return
+		}
+	}
+	t.Fatalf("high-coverage fuzzy memory was not injected: %+v", out.Memories)
+}
+
+func TestRelevanceStrongOnlyBridgesBoundedNaturalParaphrase(t *testing.T) {
+	server, store := newRelevanceFixture(t)
+	session := firstSessionID(t, store)
+	body, _ := json.Marshal(relevanceRequest{
+		SessionID: session, Query: "Where should I store emergency funds?", MaxChars: 500,
+		MaxMemories: 5, StrongOnly: true,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/context/relevance", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var out relevanceResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, memory := range out.Memories {
+		if memory.MemoryID == "rel-6" {
+			return
+		}
+	}
+	t.Fatalf("bounded paraphrase was not injected: %+v", out.Memories)
+}
+
+func TestStrongAutomaticMatchBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		class    MatchClass
+		subject  string
+		query    string
+		eligible bool
+	}{
+		{"exact content", MatchContent, "unrelated", "anything", true},
+		{"fuzzy at boundary", MatchFuzzy, "alpha beta gamma delta epsilon zeta eta", "alpha beta gamma delta epsilon zeta eta theta iota kappa", true},
+		{"fuzzy below boundary", MatchFuzzy, "alpha beta gamma delta epsilon zeta", "alpha beta gamma delta epsilon zeta eta theta iota kappa", false},
+		{"bounded paraphrase", MatchFuzzy, "keep emergency money", "where should I store emergency funds", true},
+		{"paraphrase remains bounded", MatchFuzzy, "keep emergency money", "where should I store emergency funds for travel tomorrow", false},
+		{"semantic", MatchSemantic, "alpha beta gamma", "alpha beta gamma", false},
+		{"none", MatchNone, "alpha beta gamma", "alpha beta gamma", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := retrieval.MemoryHit{MatchClass: int(test.class), Subject: test.subject}
+			if got := strongAutomaticMatch(hit, test.query); got != test.eligible {
+				t.Fatalf("eligible=%t want %t", got, test.eligible)
+			}
+		})
+	}
+}
+
+func BenchmarkAutomaticRelevanceCoverage(b *testing.B) {
+	query := "Where should I store emergency funds?"
+	text := "Keep emergency money in an insured savings account."
+	b.Run("plain-token-overlap", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = overlapStrength(query, text)
+		}
+	})
+	b.Run("bounded-paraphrase-overlap", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = automaticRelevanceCoverage(query, text)
+		}
+	})
 }
 
 // firstSessionID returns the id of the fixture's single session.

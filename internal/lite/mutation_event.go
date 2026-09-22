@@ -334,6 +334,17 @@ func (s *Store) loadMutationEvents() error {
 	if err != nil {
 		return err
 	}
+	// Mutation events are authoritative for governed memory state, but access
+	// heat and feedback are runtime state persisted only in memories.jsonl.
+	// Replaying historical NewMemory/UpdatedMemory snapshots over a healthy
+	// projection would otherwise reset that state on every restart. Keep the
+	// pre-replay rows and merge only their runtime fields after the journal has
+	// rebuilt a matching governed version. A stale projection from a crash (or
+	// one with altered governed content) deliberately fails this match.
+	projected := make(map[string]MemoryRow, len(s.memories))
+	for id, row := range s.memories {
+		projected[id] = row
+	}
 	var previous int64
 	var previousHash string
 	anchorReached := s.integrityAnchorHash == ""
@@ -366,6 +377,11 @@ func (s *Store) loadMutationEvents() error {
 		return fmt.Errorf("memory_events.jsonl: key rotation anchor not found")
 	}
 	if len(lines) > 0 {
+		for id, replayed := range s.memories {
+			if row, ok := projected[id]; ok && sameGovernedMemoryVersion(row, replayed) {
+				s.memories[id] = mergeRuntimeMemoryState(replayed, row)
+			}
+		}
 		if err := s.flushKindLocked("memories", s.memoriesJSONL()); err != nil {
 			return err
 		}
@@ -380,6 +396,28 @@ func (s *Store) loadMutationEvents() error {
 		}
 	}
 	return nil
+}
+
+func sameGovernedMemoryVersion(projected, replayed MemoryRow) bool {
+	return projected.MemoryID == replayed.MemoryID &&
+		projected.StateVersion == replayed.StateVersion &&
+		projected.ContentHash == replayed.ContentHash &&
+		projected.Lifecycle == replayed.Lifecycle &&
+		projected.UpdatedAt.Equal(replayed.UpdatedAt)
+}
+
+// mergeRuntimeMemoryState preserves fields changed by retrieval and feedback,
+// which intentionally do not create governance mutation events. All authored
+// content, scope, lifecycle, importance, and revision fields remain sourced
+// from the verified mutation journal.
+func mergeRuntimeMemoryState(authoritative, projected MemoryRow) MemoryRow {
+	authoritative.AccessCount = projected.AccessCount
+	authoritative.LastAccessedAt = projected.LastAccessedAt
+	authoritative.Activation = projected.Activation
+	authoritative.Confidence = projected.Confidence
+	authoritative.Disputed = projected.Disputed
+	authoritative.LastUsedSeq = projected.LastUsedSeq
+	return authoritative
 }
 
 func mutationEventHash(event MemoryMutationEvent) string {

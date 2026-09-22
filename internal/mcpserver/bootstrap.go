@@ -109,7 +109,7 @@ func readProtectedConfig(path string) (map[string]string, error) {
 	allowed := map[string]bool{
 		"MINDMORY_ENDPOINT": true, "MINDMORY_MCP_TOKEN": true,
 		"MINDMORY_BOUND_SESSION_ID": true, "MINDMORY_BOUND_MESSAGE_ID": true,
-		"MINDMORY_MCP_LOG_LEVEL": true,
+		"MINDMORY_MCP_LOG_LEVEL": true, "MINDMORY_MCP_PROFILE": true,
 	}
 	values := map[string]string{}
 	scanner := bufio.NewScanner(file)

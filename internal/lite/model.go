@@ -361,6 +361,7 @@ var retrievalStopWords = map[string]bool{
 	"about": true, "after": true, "and": true, "are": true,
 	"before": true, "can": true, "could": true, "did": true,
 	"does": true, "for": true, "from": true, "how": true,
+	"i": true, "me": true, "my": true,
 	"into": true, "our": true, "should": true, "that": true,
 	"request": true,
 	"the":     true, "this": true, "was": true, "were": true,

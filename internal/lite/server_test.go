@@ -19,6 +19,7 @@ import (
 	"mindmory.local/core/internal/auth"
 	"mindmory.local/core/internal/config"
 	domain "mindmory.local/core/internal/memory"
+	"mindmory.local/core/internal/retrieval"
 )
 
 func testLogger() *slog.Logger {
@@ -511,6 +512,109 @@ func TestMutationEventReplayRepairsLostProjections(t *testing.T) {
 	changes, _, _ := reopened.ContinuityChanges(context.Background(), 0, "project-a", 20, false)
 	if len(changes) != 1 || changes[0].TargetID != result.MemoryID {
 		t.Fatalf("continuity not replayed: %+v", changes)
+	}
+}
+
+func TestMutationEventReplayPreservesRuntimeMemoryState(t *testing.T) {
+	server, store, principal, session := governanceFixture(t)
+	content := "Remember that restart must preserve ranking state."
+	messageID := addGovernanceMessage(t, store, session.SessionID, "restart-heat", content)
+	result, err := server.applyMutation(context.Background(), principal, mutationRequest{
+		SessionID: session.SessionID, MessageID: messageID, Mutation: domain.MutationRemember,
+		MemoryKind: domain.KindProjectDecision, Scope: domain.ScopeProject,
+		Subject: "restart ranking state", EvidenceQuote: content,
+	})
+	if err != nil || result.Outcome != "APPLIED" {
+		t.Fatalf("apply: %+v err=%v", result, err)
+	}
+	if err := store.RecordAccess(context.Background(), result.MemoryID, session.SessionID, retrieval.AccessRecall); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyFeedback(context.Background(), result.MemoryID, session.SessionID, "misled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.LoadMemoryRow(context.Background(), result.MemoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.AccessCount != 2 || want.LastAccessedAt == nil || want.LastUsedSeq != session.Seq ||
+		want.Confidence != 0.75 || !want.Disputed {
+		t.Fatalf("runtime state setup failed: %+v", want)
+	}
+	dir := store.Dir()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for restart := 1; restart <= 3; restart++ {
+		reopened, err := OpenVerified(dir, []byte(strings.Repeat("k", 32)))
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		got, err := reopened.LoadMemoryRow(context.Background(), result.MemoryID)
+		if err != nil {
+			reopened.Close()
+			t.Fatalf("restart %d load: %v", restart, err)
+		}
+		if got.AccessCount != want.AccessCount || got.LastUsedSeq != want.LastUsedSeq ||
+			got.Activation != want.Activation || got.Confidence != want.Confidence || got.Disputed != want.Disputed ||
+			got.LastAccessedAt == nil || !got.LastAccessedAt.Equal(*want.LastAccessedAt) {
+			reopened.Close()
+			t.Fatalf("restart %d changed runtime state: got=%+v want=%+v", restart, got, want)
+		}
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("restart %d close: %v", restart, err)
+		}
+	}
+}
+
+func TestMutationEventReplayRejectsRuntimeStateFromMismatchedProjection(t *testing.T) {
+	server, store, principal, session := governanceFixture(t)
+	content := "Remember that the signed journal owns governed content."
+	messageID := addGovernanceMessage(t, store, session.SessionID, "mismatched-projection", content)
+	result, err := server.applyMutation(context.Background(), principal, mutationRequest{
+		SessionID: session.SessionID, MessageID: messageID, Mutation: domain.MutationRemember,
+		MemoryKind: domain.KindProjectDecision, Scope: domain.ScopeProject,
+		Subject: "journal authority", EvidenceQuote: content,
+	})
+	if err != nil || result.Outcome != "APPLIED" {
+		t.Fatalf("apply: %+v err=%v", result, err)
+	}
+	dir := store.Dir()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := readJSONL(filepath.Join(dir, "memories.jsonl"))
+	if err != nil || len(lines) != 1 {
+		t.Fatalf("projection: lines=%d err=%v", len(lines), err)
+	}
+	var altered MemoryRow
+	if err := json.Unmarshal(lines[0], &altered); err != nil {
+		t.Fatal(err)
+	}
+	altered.Content = "altered projection content"
+	altered.ContentHash = hashContent(altered.Content)
+	altered.AccessCount = 999
+	line, _ := json.Marshal(altered)
+	if err := os.WriteFile(filepath.Join(dir, "memories.jsonl"), append(line, '\n'), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenVerified(dir, []byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.LoadMemoryRow(context.Background(), result.MemoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Content != content || got.ContentHash != hashContent(content) || got.AccessCount != 0 {
+		t.Fatalf("mismatched projection runtime state was trusted: %+v", got)
 	}
 }
 

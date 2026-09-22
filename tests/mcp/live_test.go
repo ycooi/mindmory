@@ -106,7 +106,8 @@ func connectMCP(t *testing.T, binary, endpoint, token, sessionID, messageID stri
 	command := exec.Command(binary)
 	command.Env = append(os.Environ(),
 		"MINDMORY_ENDPOINT="+endpoint, "MINDMORY_MCP_TOKEN="+token,
-		"MINDMORY_BOUND_SESSION_ID="+sessionID, "MINDMORY_BOUND_MESSAGE_ID="+messageID)
+		"MINDMORY_BOUND_SESSION_ID="+sessionID, "MINDMORY_BOUND_MESSAGE_ID="+messageID,
+		"MINDMORY_MCP_PROFILE=full")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	client := mcp.NewClient(&mcp.Implementation{Name: "live-test", Version: "1"}, nil)
@@ -123,7 +124,7 @@ func connectPackagedMCP(t *testing.T, binary string) *mcp.ClientSession {
 	command := exec.Command(binary)
 	// The release contract intentionally supplies no token environment. The
 	// bridge must discover its protected config beside the distribution.
-	command.Env = []string{}
+	command.Env = []string{"MINDMORY_MCP_PROFILE=full"}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	client := mcp.NewClient(&mcp.Implementation{Name: "release-acceptance", Version: "1"}, nil)

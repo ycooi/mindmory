@@ -47,14 +47,18 @@ MINDMORY_LOCAL_CLIENT_KEY=local-agent
 MINDMORY_SEMANTIC_SEARCH=0
 MINDMORY_EMBED_MODEL=qwen3-embedding:0.6b
 
-# --- MCP stdio server (runs on the host, launched by your assistant) --------
-# The MCP token must equal the client token inside MINDMORY_MCP_CLIENT_TOKENS_JSON.
+# --- Native hook and optional MCP bridge ------------------------------------
+# The client token must equal the token inside MINDMORY_MCP_CLIENT_TOKENS_JSON.
+# Codex's native hook uses only ENDPOINT and TOKEN; it registers no MCP tools.
 MINDMORY_ENDPOINT=http://127.0.0.1:58080
 MINDMORY_MCP_TOKEN=replace-with-the-same-client-token-as-in-mcp-client-tokens-json
-# REQUIRED — the continuity session the stdio server scopes calls to.
+# REQUIRED only for the optional MCP stdio server.
 # `./setup.sh` creates the initial session and fills this in automatically.
 MINDMORY_BOUND_SESSION_ID=replace-with-the-session-id-from-setup
 # Optional: bind the stdio server to one archived turn. When omitted, the
 # server re-resolves the latest current-user turn per mutation call.
 # MINDMORY_BOUND_MESSAGE_ID=
 MINDMORY_MCP_LOG_LEVEL=INFO
+# compact advertises one on-demand gateway tool and is the default. Use full
+# only for clients that require the legacy thirteen separate tool names.
+MINDMORY_MCP_PROFILE=compact

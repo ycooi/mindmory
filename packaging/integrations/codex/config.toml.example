@@ -1,7 +1,11 @@
-# Merge this table into ~/.codex/config.toml or a trusted project's
-# .codex/config.toml. Replace /ABSOLUTE/PATH with the extracted distribution.
+# Optional MCP compatibility. Native Codex hooks do not need this server and
+# leave it disabled so Mindmory contributes no tool schema to normal sessions.
+# Replace /ABSOLUTE/PATH only if MCP read tools are required. Mutation tools
+# also require the separate bound-session checkpoint lifecycle described in
+# integrations/generic/README.md; native Codex sessions do not automatically
+# grant mutation authority to this static bridge.
 [mcp_servers.mindmory]
 command = "/ABSOLUTE/PATH/bin/mindmory-mcp-stdio"
-required = true
+enabled = false
 startup_timeout_sec = 20
 tool_timeout_sec = 60

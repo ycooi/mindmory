@@ -34,6 +34,10 @@ const (
 	relevanceMaxCharsCap        = 4000
 	relevanceDefaultMaxMemories = 5
 	relevanceMaxMemoriesCap     = 12
+	// Automatic injection must be materially stricter than an explicit
+	// search. A fuzzy match needs at least 70% distinctive-token coverage
+	// before it is allowed into model context.
+	relevanceStrongTokenCoverage = 0.70
 )
 
 // relevanceRequest is the wire input for POST /v1/context/relevance.
@@ -42,6 +46,7 @@ type relevanceRequest struct {
 	Query       string `json:"query"`
 	MaxChars    int    `json:"max_chars,omitempty"`
 	MaxMemories int    `json:"max_memories,omitempty"`
+	StrongOnly  bool   `json:"strong_only,omitempty"`
 }
 
 // relevanceResponse is the bounded ranked packet for one pre-step.
@@ -133,6 +138,9 @@ func (s *Server) relevance(w http.ResponseWriter, r *http.Request) {
 	out := relevanceResponse{SessionID: scope.SessionID, ProjectKey: scope.ProjectKey, Query: query, Memories: []retrieval.MemoryHit{}}
 	budget := maxChars
 	for _, h := range hits {
+		if request.StrongOnly && !strongAutomaticMatch(h, query) {
+			continue
+		}
 		if len(out.Memories) >= maxMemories {
 			out.Truncated = true
 			break
@@ -157,4 +165,55 @@ func (s *Server) relevance(w http.ResponseWriter, r *http.Request) {
 		"query": query, "memories": len(out.Memories), "truncated": out.Truncated,
 	})
 	httpapi.WriteJSON(w, http.StatusOK, out)
+}
+
+func strongAutomaticMatch(hit retrieval.MemoryHit, query string) bool {
+	if hit.MatchClass >= int(MatchContent) {
+		return true
+	}
+	if hit.MatchClass != int(MatchFuzzy) {
+		return false
+	}
+	// The ranked hit's MatchStrength may carry normalized BM25 relevance, and
+	// ClassifyMatch may choose trigram similarity before token coverage.
+	// Compute distinctive-token coverage directly so a strong lexical match is
+	// not rejected merely because it lives in a small index, while one shared
+	// token in a long unrelated query still stays out.
+	coverage := automaticRelevanceCoverage(query, hit.Subject+" "+hit.Content)
+	return coverage >= relevanceStrongTokenCoverage
+}
+
+// automaticRelevanceCoverage recognizes a deliberately tiny set of
+// high-confidence paraphrases for the no-model injection path. Canonicalizing
+// instead of expanding keeps the denominator stable: an unrelated record that
+// shares only "funds" still covers one of the query's concepts, while
+// "store emergency funds" can match a record phrased as "keep emergency
+// money". Candidate
+// retrieval must still find a real lexical anchor before this gate runs.
+func automaticRelevanceCoverage(query, text string) float64 {
+	canonicalize := func(tokens map[string]bool) map[string]bool {
+		out := make(map[string]bool, len(tokens))
+		for token := range tokens {
+			switch token {
+			case "keep", "put", "store":
+				token = "place"
+			case "cash", "money", "fund", "funds":
+				token = "funds"
+			}
+			out[token] = true
+		}
+		return out
+	}
+	q := canonicalize(retrievalTokenSet(query))
+	if len(q) == 0 {
+		return 0
+	}
+	t := canonicalize(retrievalTokenSet(text))
+	matched := 0
+	for token := range q {
+		if t[token] {
+			matched++
+		}
+	}
+	return float64(matched) / float64(len(q))
 }

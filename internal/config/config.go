@@ -20,7 +20,7 @@ type MCPClientConfig struct {
 }
 
 type MCPServerConfig struct {
-	Endpoint, Token, BoundSessionID, BoundMessageID, LogLevel string
+	Endpoint, Token, BoundSessionID, BoundMessageID, LogLevel, Profile string
 }
 
 // LoadMCPServer reads the configuration needed by the stdio MCP bridge.
@@ -32,14 +32,22 @@ func LoadMCPServer(lookup LookupEnv) (MCPServerConfig, error) {
 		BoundSessionID: value("MINDMORY_BOUND_SESSION_ID"),
 		BoundMessageID: value("MINDMORY_BOUND_MESSAGE_ID"),
 		LogLevel:       strings.ToUpper(value("MINDMORY_MCP_LOG_LEVEL")),
+		Profile:        strings.ToLower(value("MINDMORY_MCP_PROFILE")),
 	}
 	if result.LogLevel == "" {
 		result.LogLevel = "INFO"
 	}
-	if validateEndpointAndToken(result.Endpoint, result.Token) != nil || result.BoundSessionID == "" || !validLogLevel(result.LogLevel) {
-		return MCPServerConfig{}, errors.New("MCP server requires endpoint, token, bound session, and valid log level")
+	if result.Profile == "" {
+		result.Profile = "compact"
+	}
+	if validateEndpointAndToken(result.Endpoint, result.Token) != nil || result.BoundSessionID == "" || !validLogLevel(result.LogLevel) || !validMCPProfile(result.Profile) {
+		return MCPServerConfig{}, errors.New("MCP server requires endpoint, token, bound session, valid log level, and compact or full profile")
 	}
 	return result, nil
+}
+
+func validMCPProfile(value string) bool {
+	return value == "compact" || value == "full"
 }
 
 // LoadCLI reads the operator endpoint and credential. The endpoint defaults to
